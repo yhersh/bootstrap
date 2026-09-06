@@ -15,7 +15,7 @@
   "rules": [
     {
       "type": "Text",
-      "globs": ["**/*.sh", "**/*.ps1", "**/*.json"],
+      "globs": ["**/*.sh", "**/*.ps1"],
       "fallthrough": true
     }
   ]

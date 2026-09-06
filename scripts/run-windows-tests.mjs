@@ -6,8 +6,12 @@ const pwsh = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-Command", "$PSVersion
 });
 
 if (pwsh.status !== 0) {
-  console.log("pwsh not available; running ScriptAnalyzer-style lint via pwsh check skipped.");
-  console.log("Windows tests require pwsh. CI should install PowerShell.");
+  if (process.env.CI === "true") {
+    console.error("pwsh not available; Windows tests are required in CI.");
+    process.exit(1);
+  }
+
+  console.log("pwsh not available; skipping Windows tests.");
   process.exit(0);
 }
 
