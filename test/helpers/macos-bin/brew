@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="${BATS_MOCK_STATE_DIR:-/tmp/bootstrap-bats-state}"
+mkdir -p "${STATE_DIR}"
+
+BREW_PREFIX="${BOOTSTRAP_BREW_PREFIX:-/opt/homebrew}"
+
+install_tailscale_binary() {
+  local source_tailscale="${BATS_MOCK_TAILSCALE_SOURCE:-${BATS_MOCK_BIN_DIR:-$(dirname "${BASH_SOURCE[0]}")}/tailscale}"
+  mkdir -p "${BREW_PREFIX}/bin"
+  cp "${source_tailscale}" "${BREW_PREFIX}/bin/tailscale"
+  chmod +x "${BREW_PREFIX}/bin/tailscale"
+}
+
+case "${1:-}" in
+  --prefix)
+    echo "${BREW_PREFIX}"
+    ;;
+  list)
+    if [[ "${2:-}" == "--formula" && "${3:-}" == "tailscale" ]]; then
+      if [[ -f "${STATE_DIR}/tailscale-installed" ]]; then
+        echo "tailscale"
+        exit 0
+      fi
+      exit 1
+    fi
+    echo "mock brew list $*" >&2
+    exit 1
+    ;;
+  install)
+    if [[ "${2:-}" == "tailscale" ]]; then
+      install_tailscale_binary
+      touch "${STATE_DIR}/tailscale-installed"
+      echo "Installed tailscale"
+      exit 0
+    fi
+    echo "mock brew install $*" >&2
+    exit 1
+    ;;
+  services)
+    case "${2:-}" in
+      start)
+        if [[ "${3:-}" == "tailscale" ]]; then
+          touch "${STATE_DIR}/tailscaled-active"
+          echo "Started tailscale"
+          exit 0
+        fi
+        ;;
+      list)
+        if [[ -f "${STATE_DIR}/tailscaled-active" ]]; then
+          echo "tailscale started"
+        else
+          echo "tailscale none"
+        fi
+        exit 0
+        ;;
+    esac
+    echo "mock brew services $*" >&2
+    exit 1
+    ;;
+  *)
+    echo "mock brew $*" >&2
+    exit 1
+    ;;
+esac

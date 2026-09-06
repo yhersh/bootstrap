@@ -39,8 +39,15 @@ EOF
 }
 
 case "${1:-}" in
+  --version)
+    echo "1.80.0"
+    exit 0
+    ;;
   status)
     if [[ "${2:-}" == "--json" ]]; then
+      if [[ -n "${BOOTSTRAP_BREW_PREFIX:-}" && ! -f "${STATE_DIR}/tailscaled-active" ]]; then
+        exit 1
+      fi
       tailscale_status_json
       exit 0
     fi
