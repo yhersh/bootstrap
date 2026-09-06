@@ -9,7 +9,20 @@ async function fetchWorker(path: string, init: RequestInit = {}) {
   return SELF.fetch(`https://bootstrap.yaronhersh.xyz${path}`, init);
 }
 
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 describe("bootstrap worker routes", () => {
+  it("manifest sha256 values match bundled script bytes", async () => {
+    expect(releaseManifest.scripts.fedora.sha256).toBe(await sha256Hex(fedoraScript));
+    expect(releaseManifest.scripts.windows.sha256).toBe(await sha256Hex(windowsScript));
+  });
+
   it("serves usage on /", async () => {
     const response = await fetchWorker("/");
     expect(response.status).toBe(200);

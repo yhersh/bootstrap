@@ -4,11 +4,11 @@
   "scripts": {
     "fedora": {
       "path": "scripts/fedora.sh",
-      "sha256": "1bab4951b338e3de59b6df5905e20a75954263a9a279ef804ecf493b33553562"
+      "sha256": "63270cbc9eff6fc477efcd784623a812e49310a4bf807dd4c8054e36461925b5"
     },
     "windows": {
       "path": "scripts/windows.ps1",
-      "sha256": "417c6624896bef68042e7750e5edc075d7eece87e5df26cbfceca178f2e6aaae"
+      "sha256": "3d7bad37378cb638ad246e7e465f512c9b9a76f318b3d7d62790f7358ef078f2"
     }
   }
 }

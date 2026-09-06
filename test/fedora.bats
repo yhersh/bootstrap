@@ -137,6 +137,22 @@ EOF
   [[ "$output" == *"curl -fsSL https://bootstrap.yaronhersh.xyz/fedora | bash"* ]]
 }
 
+@test "piped execution via cat runs bootstrap stages" {
+  setup_fake_fedora
+  run bash -c "cat \"${PROJECT_ROOT}/scripts/fedora.sh\" | bash"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Configuring Tailscale official Fedora repository"* ]]
+  [ -f "${BATS_MOCK_STATE_DIR}/tailscale-repo" ]
+}
+
+@test "piped execution via bash -c runs bootstrap stages" {
+  setup_fake_fedora
+  run bash -c "bash -c \"\$(cat \"${PROJECT_ROOT}/scripts/fedora.sh\")\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Configuring Tailscale official Fedora repository"* ]]
+  [ -f "${BATS_MOCK_STATE_DIR}/tailscale-repo" ]
+}
+
 @test "truncated script executes nothing" {
   setup_fake_fedora
   local truncated_script
@@ -149,57 +165,49 @@ EOF
   rm -f "${truncated_script}"
 }
 
-@test "truncation before EOF marker does not execute stages" {
-  setup_fake_fedora
-  local truncated_script
-  truncated_script=$(mktemp)
-  python3 - "${PROJECT_ROOT}/scripts/fedora.sh" "${truncated_script}" <<'PY'
-import pathlib
-import sys
-
-text = pathlib.Path(sys.argv[1]).read_text()
-marker = "# bootstrap-entry-v1\n"
-index = text.rfind(marker)
-if index == -1:
-    raise SystemExit('EOF marker not found')
-pathlib.Path(sys.argv[2]).write_text(text[:index])
-PY
-  run bash "${truncated_script}"
-  [ ! -f "${BATS_MOCK_STATE_DIR}/tailscale-repo" ]
-  [ ! -f "${BATS_MOCK_STATE_DIR}/tailscale-installed" ]
-  rm -f "${truncated_script}"
-}
-
-@test "no byte prefix within final entrypoint lines executes stages" {
+@test "no byte prefix within final 160 bytes executes stages" {
   setup_fake_fedora
   python3 - "${PROJECT_ROOT}/scripts/fedora.sh" "${BATS_MOCK_STATE_DIR}" <<'PY'
 import os
 import pathlib
 import subprocess
 import sys
-import tempfile
 
 source = pathlib.Path(sys.argv[1])
 state_dir = pathlib.Path(sys.argv[2])
 data = source.read_bytes()
-lines = data.splitlines(keepends=True)
-if len(lines) < 2:
-    raise SystemExit('expected at least two final lines')
-
-tail_start = sum(len(line) for line in lines[:-2])
-final_two_len = len(lines[-2]) + len(lines[-1])
+size = len(data)
+start = max(0, size - 160)
+invoke_line = b'__bootstrap_entry__ "$@" bootstrap-entry-v1'
+invoke_start = data.rfind(invoke_line)
+if invoke_start == -1:
+    raise SystemExit('invoke line not found')
+invoke_end = invoke_start + len(invoke_line)
 env = os.environ.copy()
-for end in range(tail_start + 1, tail_start + final_two_len):
+stage_markers = (
+    "Configuring Tailscale official Fedora repository",
+    "Installing Tailscale",
+    "Remote access ready",
+)
+
+for end in range(start, size):
+    if end >= invoke_end:
+        continue
     truncated = data[:end]
-    with tempfile.NamedTemporaryFile('wb', suffix='.sh', delete=False) as handle:
-        handle.write(truncated)
-        script_path = handle.name
-    (state_dir / 'tailscale-repo').unlink(missing_ok=True)
-    (state_dir / 'tailscale-installed').unlink(missing_ok=True)
-    subprocess.run(['bash', script_path], env=env, capture_output=True)
-    pathlib.Path(script_path).unlink(missing_ok=True)
-    if (state_dir / 'tailscale-repo').exists() or (state_dir / 'tailscale-installed').exists():
-        raise SystemExit(f'stages executed for truncation ending at byte {end}')
+    result = subprocess.run(
+        ["bash"],
+        input=truncated,
+        capture_output=True,
+        env=env,
+    )
+    (state_dir / "tailscale-repo").unlink(missing_ok=True)
+    (state_dir / "tailscale-installed").unlink(missing_ok=True)
+    output = result.stdout.decode() + result.stderr.decode()
+    if (state_dir / "tailscale-repo").exists() or (state_dir / "tailscale-installed").exists():
+        raise SystemExit(f"stages executed for truncation ending at byte {end}")
+    for marker in stage_markers:
+        if marker in output:
+            raise SystemExit(f"stage marker '{marker}' seen at byte {end}")
 PY
 }
 
