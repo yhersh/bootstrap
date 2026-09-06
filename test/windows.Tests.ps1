@@ -37,7 +37,8 @@ Describe 'windows.ps1 static guarantees' {
     It 'restricts SSH firewall access to the Tailscale CIDR' {
         $script:ScriptContent | Should -Match '100\.64\.0\.0/10'
         $script:ScriptContent | Should -Match 'Assert-SshFirewallPolicy'
-        $script:ScriptContent | Should -Match 'Disable-BroadSshFirewallRules'
+        $script:ScriptContent | Should -Match 'Disable-NonManagedSshFirewallRules'
+        $script:ScriptContent | Should -Match 'Assert-ManagedSshFirewallRuleReady'
     }
 
     It 'resolves PowerShell from fixed system paths' {

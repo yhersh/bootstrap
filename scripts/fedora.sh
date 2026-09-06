@@ -14,6 +14,7 @@ readonly TAILSCALE_REPO_URL='https://pkgs.tailscale.com/stable/fedora/tailscale.
 
 STAGE="preflight"
 TMPDIR_BOOTSTRAP=""
+_BOOTSTRAP_INVOKE=''
 
 cleanup() {
   if [[ -n "${TMPDIR_BOOTSTRAP}" && -d "${TMPDIR_BOOTSTRAP}" ]]; then
@@ -109,9 +110,26 @@ if field == "backend_state":
 elif field == "hostname":
     self_info = data.get("Self") or {}
     print(self_info.get("HostName", ""))
-elif field == "run_ssh":
-    prefs = data.get("Prefs") or {}
-    print("true" if prefs.get("RunSSH") else "false")
+else:
+    sys.exit(1)
+PY
+}
+
+parse_tailscale_prefs_json() {
+  local field=$1
+  local prefs_json=$2
+  python3 - "$field" "$prefs_json" <<'PY'
+import json
+import sys
+
+field = sys.argv[1]
+try:
+    data = json.loads(sys.argv[2])
+except json.JSONDecodeError:
+    sys.exit(1)
+
+if field == "run_ssh":
+    print("true" if data.get("RunSSH") else "false")
 else:
     sys.exit(1)
 PY
@@ -130,9 +148,9 @@ tailscale_hostname() {
 }
 
 tailscale_ssh_enabled() {
-  local status_json run_ssh
-  status_json=$(tailscale status --json 2>/dev/null) || return 1
-  run_ssh=$(parse_tailscale_status_json run_ssh "${status_json}") || return 1
+  local prefs_json run_ssh
+  prefs_json=$(tailscale debug prefs 2>/dev/null) || return 1
+  run_ssh=$(parse_tailscale_prefs_json run_ssh "${prefs_json}") || return 1
   [[ "${run_ssh}" == "true" ]]
 }
 
@@ -140,10 +158,55 @@ validate_tailscale_repo_file() {
   local file=$1
 
   [[ -f "${file}" ]] || return 1
-  grep -q '^gpgcheck=1' "${file}" || return 1
-  grep -q '^repo_gpgcheck=1' "${file}" || return 1
-  grep -q 'pkgs\.tailscale\.com' "${file}" || return 1
-  grep -qE '^baseurl=.*pkgs\.tailscale\.com' "${file}" || return 1
+  python3 - "${file}" <<'PY'
+import re
+import sys
+from urllib.parse import urlparse
+
+path = sys.argv[1]
+try:
+    content = open(path, encoding="utf-8").read()
+except OSError:
+    sys.exit(1)
+
+sections = {}
+current = None
+for raw_line in content.splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith("#") or line.startswith(";"):
+        continue
+    section_match = re.fullmatch(r"\[([^\]]+)\]", line)
+    if section_match:
+        current = section_match.group(1)
+        sections[current] = {}
+        continue
+    if current is None or "=" not in line:
+        sys.exit(1)
+    key, value = line.split("=", 1)
+    sections[current][key.strip()] = value.strip()
+
+if set(sections.keys()) != {"tailscale-stable"}:
+    sys.exit(1)
+
+section = sections["tailscale-stable"]
+required = {
+    "gpgcheck": "1",
+    "repo_gpgcheck": "1",
+    "enabled": "1",
+}
+for key, expected in required.items():
+    if section.get(key) != expected:
+        sys.exit(1)
+
+for url_key in ("baseurl", "gpgkey"):
+    url = section.get(url_key, "")
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc != "pkgs.tailscale.com":
+        sys.exit(1)
+
+if "pkgs.tailscale.com" not in section.get("baseurl", ""):
+    sys.exit(1)
+PY
 }
 
 install_tailscale_repo() {
@@ -316,4 +379,12 @@ main() {
   stage_verify
 }
 
-main "$@"
+__bootstrap_entrypoint__() { main "$@"; }
+_BOOTSTRAP_INVOKE='__bootstrap_entrypoint__'
+__bootstrap_entry__() {
+  [[ "$(tail -n1 "$0")" == "# bootstrap-entry-v1" ]] || return 0
+  printf '\n' | cmp -s - <(tail -c 1 "$0") || return 0
+  "${_BOOTSTRAP_INVOKE}" "$@"
+}
+__bootstrap_entry__ "$@"
+# bootstrap-entry-v1

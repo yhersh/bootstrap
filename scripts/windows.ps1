@@ -16,7 +16,6 @@ $ErrorActionPreference = 'Stop'
 
 $TailscaleRemoteCidr = '100.64.0.0/10'
 $TailscaleSshRuleName = 'OpenSSH-Server-In-TCP-Tailscale'
-$DefaultOpenSshRuleName = 'OpenSSH-Server-In-TCP'
 
 function Test-IsElevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -147,42 +146,80 @@ function Test-IsAcceptableSshFirewallRule {
     return $true
 }
 
-function Disable-BroadSshFirewallRules {
-    $defaultRule = Get-NetFirewallRule -Name $DefaultOpenSshRuleName -ErrorAction SilentlyContinue
-    if ($defaultRule -and $defaultRule.Enabled -eq 'True') {
-        if ($WhatIfPreference) {
-            Write-StageMessage "WhatIf: would disable firewall rule $DefaultOpenSshRuleName."
-        }
-        else {
-            Write-StageMessage "Disabling default OpenSSH firewall rule ($DefaultOpenSshRuleName)..."
-            Disable-NetFirewallRule -Name $DefaultOpenSshRuleName | Out-Null
-        }
-    }
-
+function Disable-NonManagedSshFirewallRules {
     foreach ($ruleInfo in Get-SshInboundAllowRules) {
-        if (Test-IsAcceptableSshFirewallRule -RuleInfo $ruleInfo) {
+        if ($ruleInfo.Rule.Name -eq $TailscaleSshRuleName) {
             continue
         }
 
         $ruleName = $ruleInfo.Rule.Name
         if ($WhatIfPreference) {
-            Write-StageMessage "WhatIf: would disable broad SSH firewall rule $ruleName."
+            Write-StageMessage "WhatIf: would disable non-managed SSH firewall rule $ruleName."
             continue
         }
 
-        Write-StageMessage "Disabling broad SSH firewall rule $ruleName..."
+        Write-StageMessage "Disabling non-managed SSH firewall rule $ruleName..."
         Disable-NetFirewallRule -Name $ruleName | Out-Null
+    }
+}
+
+function Get-ManagedSshFirewallRuleInfo {
+    $rule = Get-NetFirewallRule -Name $TailscaleSshRuleName -ErrorAction SilentlyContinue
+    if (-not $rule) {
+        return $null
+    }
+
+    $portFilter = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue
+    $addressFilter = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue
+    $interfaceFilter = Get-NetFirewallInterfaceFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue
+
+    return [PSCustomObject]@{
+        Rule           = $rule
+        RemoteAddress  = $addressFilter.RemoteAddress
+        InterfaceAlias = $interfaceFilter.InterfaceAlias
+    }
+}
+
+function Set-ManagedSshFirewallRuleFilters {
+    param(
+        [Parameter(Mandatory = $true)] $Rule
+    )
+
+    Set-NetFirewallRule -Name $TailscaleSshRuleName `
+        -Enabled True `
+        -Direction Inbound `
+        -Action Allow `
+        -Protocol TCP `
+        -LocalPort 22 | Out-Null
+    Set-NetFirewallAddressFilter -AssociatedNetFirewallRule $Rule -RemoteAddress $TailscaleRemoteCidr | Out-Null
+
+    $tailscaleAdapter = Get-TailscaleNetAdapter
+    if ($tailscaleAdapter) {
+        Set-NetFirewallInterfaceFilter -AssociatedNetFirewallRule $Rule -InterfaceAlias $tailscaleAdapter.Name | Out-Null
     }
 }
 
 function Ensure-TailscaleScopedSshFirewallRule {
     $existingRule = Get-NetFirewallRule -Name $TailscaleSshRuleName -ErrorAction SilentlyContinue
-    if ($existingRule -and $existingRule.Enabled -eq 'True') {
-        $ruleInfo = Get-SshInboundAllowRules | Where-Object { $_.Rule.Name -eq $TailscaleSshRuleName } | Select-Object -First 1
-        if ($ruleInfo -and (Test-IsAcceptableSshFirewallRule -RuleInfo $ruleInfo)) {
-            Write-StageMessage 'Tailscale-scoped SSH firewall rule already present.'
+    if ($existingRule) {
+        if ($WhatIfPreference) {
+            Write-StageMessage "WhatIf: would reconcile firewall rule $TailscaleSshRuleName."
             return
         }
+
+        Write-StageMessage "Reconciling existing Tailscale-scoped SSH firewall rule..."
+        try {
+            Set-ManagedSshFirewallRuleFilters -Rule $existingRule
+        }
+        catch {
+            Write-StageMessage "Managed SSH firewall rule could not be updated; recreating..."
+            Remove-NetFirewallRule -Name $TailscaleSshRuleName -ErrorAction SilentlyContinue | Out-Null
+            $existingRule = $null
+        }
+    }
+
+    if ($existingRule) {
+        return
     }
 
     if ($WhatIfPreference) {
@@ -210,28 +247,43 @@ function Ensure-TailscaleScopedSshFirewallRule {
     New-NetFirewallRule @ruleParams | Out-Null
 }
 
+function Assert-ManagedSshFirewallRuleReady {
+    if ($WhatIfPreference) {
+        return
+    }
+
+    $managedRule = Get-ManagedSshFirewallRuleInfo
+    if (-not $managedRule) {
+        throw 'Managed Tailscale-scoped SSH firewall rule is missing.'
+    }
+
+    if ($managedRule.Rule.Enabled -ne 'True') {
+        throw 'Managed Tailscale-scoped SSH firewall rule is not enabled.'
+    }
+
+    if (-not (Test-IsAcceptableSshFirewallRule -RuleInfo $managedRule)) {
+        throw 'Managed Tailscale-scoped SSH firewall rule has incorrect filters.'
+    }
+}
+
 function Assert-SshFirewallPolicy {
     if ($WhatIfPreference) {
         return
     }
 
     $allowRules = Get-SshInboundAllowRules
-    $acceptableRules = @($allowRules | Where-Object { Test-IsAcceptableSshFirewallRule -RuleInfo $_ })
 
-    if ($acceptableRules.Count -ne 1) {
-        throw "Expected exactly one Tailscale-scoped SSH allow rule; found $($acceptableRules.Count)."
+    if ($allowRules.Count -ne 1) {
+        throw "Expected exactly one enabled SSH allow rule; found $($allowRules.Count)."
     }
 
-    if ($acceptableRules[0].Rule.Name -ne $TailscaleSshRuleName) {
-        throw "Unexpected SSH allow rule name: $($acceptableRules[0].Rule.Name)."
+    $managedRule = $allowRules[0]
+    if ($managedRule.Rule.Name -ne $TailscaleSshRuleName) {
+        throw "Unexpected SSH allow rule name: $($managedRule.Rule.Name)."
     }
 
-    foreach ($ruleInfo in $allowRules) {
-        if (Test-IsAcceptableSshFirewallRule -RuleInfo $ruleInfo) {
-            continue
-        }
-
-        throw "Broad SSH inbound allow rule remains enabled: $($ruleInfo.Rule.Name)"
+    if (-not (Test-IsAcceptableSshFirewallRule -RuleInfo $managedRule)) {
+        throw 'Managed SSH allow rule does not match the required Tailscale scope.'
     }
 }
 
@@ -305,9 +357,15 @@ function Ensure-OpenSshServer {
         }
     }
 
-    Disable-BroadSshFirewallRules
-    Ensure-TailscaleScopedSshFirewallRule
-    Assert-SshFirewallPolicy
+    try {
+        Ensure-TailscaleScopedSshFirewallRule
+        Assert-ManagedSshFirewallRuleReady
+        Disable-NonManagedSshFirewallRules
+        Assert-SshFirewallPolicy
+    }
+    catch {
+        throw "SSH firewall migration failed before disabling existing access: $($_.Exception.Message)"
+    }
 
     if ($service.Status -ne 'Running') {
         if ($WhatIfPreference) {

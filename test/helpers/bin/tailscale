@@ -28,22 +28,20 @@ read_run_ssh() {
   fi
 }
 
-tailscale_json() {
+tailscale_status_json() {
   local backend
   backend=$(read_backend_state)
   local hostname
   hostname=$(read_hostname)
-  local run_ssh
-  run_ssh=$(read_run_ssh)
   cat <<EOF
-{"BackendState":"${backend}","Self":{"HostName":"${hostname}","TailscaleIPs":["100.64.0.1"]},"Prefs":{"RunSSH":${run_ssh}}}
+{"BackendState":"${backend}","Self":{"HostName":"${hostname}","TailscaleIPs":["100.64.0.1"]}}
 EOF
 }
 
 case "${1:-}" in
   status)
     if [[ "${2:-}" == "--json" ]]; then
-      tailscale_json
+      tailscale_status_json
       exit 0
     fi
     if [[ "$(read_backend_state)" == "Running" ]]; then
@@ -71,7 +69,9 @@ case "${1:-}" in
     done
     echo "Running" >"${STATE_DIR}/tailscale-backend"
     echo "${hostname}" >"${STATE_DIR}/tailscale-hostname"
-    echo "true" >"${STATE_DIR}/tailscale-run-ssh"
+    if [[ "${TAILSCALE_LEAVE_RUN_SSH:-}" != "false" ]]; then
+      echo "true" >"${STATE_DIR}/tailscale-run-ssh"
+    fi
     echo "Success. Visit https://login.tailscale.com/a/mock to authenticate."
     ;;
   set)
@@ -79,7 +79,9 @@ case "${1:-}" in
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --ssh=true)
-          echo "true" >"${STATE_DIR}/tailscale-run-ssh"
+          if [[ "${TAILSCALE_LEAVE_RUN_SSH:-}" != "false" ]]; then
+            echo "true" >"${STATE_DIR}/tailscale-run-ssh"
+          fi
           ;;
         --hostname=*)
           echo "${1#*=}" >"${STATE_DIR}/tailscale-hostname"
