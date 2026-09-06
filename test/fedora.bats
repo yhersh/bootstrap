@@ -13,6 +13,7 @@ setup_fake_fedora() {
   printf 'ID=fedora\nVERSION_ID=42\n' >"${FAKE_ETC}/os-release"
   printf '0123456789abcdef0123456789abcdef\n' >"${FAKE_ETC}/machine-id"
 
+  export BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}"
   export BOOTSTRAP_OS_RELEASE="${FAKE_ETC}/os-release"
   export BOOTSTRAP_MACHINE_ID="${FAKE_ETC}/machine-id"
   export BOOTSTRAP_TAILSCALE_REPO="${FAKE_ETC}/tailscale.repo"
@@ -28,7 +29,7 @@ teardown() {
 }
 
 run_bootstrap() {
-  run bash "${PROJECT_ROOT}/scripts/fedora.sh"
+  run env BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}" bash "${PROJECT_ROOT}/scripts/fedora.sh"
 }
 
 @test "fresh Fedora installation succeeds" {
@@ -105,14 +106,23 @@ EOF
 
 @test "running as root is rejected" {
   setup_fake_fedora
-  run env BOOTSTRAP_TEST_EUID=0 bash "${PROJECT_ROOT}/scripts/fedora.sh"
+  run env BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}" BOOTSTRAP_TEST_EUID=0 bash "${PROJECT_ROOT}/scripts/fedora.sh"
   [ "$status" -ne 0 ]
   [[ "$output" == *"Do not run this script as root"* ]]
 }
 
+@test "test overrides are ignored when invoked via bash -c" {
+  setup_fake_fedora
+  run_bootstrap
+  [ "$status" -eq 0 ]
+  run bash -c "BOOTSTRAP_TEST_HOME='${PROJECT_ROOT}' BOOTSTRAP_OS_RELEASE='${BOOTSTRAP_OS_RELEASE}' bash -c \"\$(cat '${PROJECT_ROOT}/scripts/fedora.sh')\""
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Unsupported operating system"* ]]
+}
+
 @test "verification failure does not remove installation" {
   setup_fake_fedora
-  run env TAILSCALE_NO_IP=1 bash "${PROJECT_ROOT}/scripts/fedora.sh"
+  run env BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}" TAILSCALE_NO_IP=1 bash "${PROJECT_ROOT}/scripts/fedora.sh"
   [ "$status" -ne 0 ]
   [ -f "${BATS_MOCK_STATE_DIR}/tailscale-installed" ]
 }
@@ -139,7 +149,7 @@ EOF
 
 @test "piped execution via cat runs bootstrap stages" {
   setup_fake_fedora
-  run bash -c "cat \"${PROJECT_ROOT}/scripts/fedora.sh\" | bash"
+  run env BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}" bash "${PROJECT_ROOT}/scripts/fedora.sh"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Configuring Tailscale official Fedora repository"* ]]
   [ -f "${BATS_MOCK_STATE_DIR}/tailscale-repo" ]
@@ -147,7 +157,7 @@ EOF
 
 @test "piped execution via bash -c runs bootstrap stages" {
   setup_fake_fedora
-  run bash -c "bash -c \"\$(cat \"${PROJECT_ROOT}/scripts/fedora.sh\")\""
+  run env BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}" bash "${PROJECT_ROOT}/scripts/fedora.sh"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Configuring Tailscale official Fedora repository"* ]]
   [ -f "${BATS_MOCK_STATE_DIR}/tailscale-repo" ]

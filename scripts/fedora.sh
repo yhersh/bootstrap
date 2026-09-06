@@ -15,6 +15,29 @@ readonly TAILSCALE_REPO_URL='https://pkgs.tailscale.com/stable/fedora/tailscale.
 STAGE="preflight"
 TMPDIR_BOOTSTRAP=""
 
+bootstrap_in_test_mode() {
+  [[ -n "${BOOTSTRAP_TEST_HOME:-}" ]] || return 1
+  [[ -f "${0}" ]] || return 1
+  local script_real test_home_real
+  script_real=$(realpath "${0}" 2>/dev/null) || return 1
+  test_home_real=$(realpath "${BOOTSTRAP_TEST_HOME}" 2>/dev/null) || return 1
+  [[ "${script_real}" == "${test_home_real}/"* ]] || return 1
+}
+
+test_override() {
+  local var_name=$1
+  local default_value=${2:-}
+  if bootstrap_in_test_mode; then
+    printf '%s' "${!var_name:-$default_value}"
+  else
+    printf '%s' "${default_value}"
+  fi
+}
+
+tailscale_auth_wait_seconds() {
+  test_override BOOTSTRAP_TAILSCALE_AUTH_WAIT_SECONDS "300"
+}
+
 cleanup() {
   if [[ -n "${TMPDIR_BOOTSTRAP}" && -d "${TMPDIR_BOOTSTRAP}" ]]; then
     rm -rf "${TMPDIR_BOOTSTRAP}"
@@ -81,7 +104,8 @@ resolve_bootstrap_hostname() {
     return
   fi
 
-  local machine_id_file="${BOOTSTRAP_MACHINE_ID:-/etc/machine-id}"
+  local machine_id_file
+  machine_id_file=$(test_override BOOTSTRAP_MACHINE_ID "/etc/machine-id")
   local machine_id=""
   if [[ -f "${machine_id_file}" ]]; then
     machine_id=$(tr -d '[:space:]' <"${machine_id_file}")
@@ -112,6 +136,8 @@ if field == "backend_state":
 elif field == "hostname":
     self_info = data.get("Self") or {}
     print(self_info.get("HostName", ""))
+elif field == "auth_url":
+    print(data.get("AuthURL", ""))
 else:
     sys.exit(1)
 PY
@@ -149,11 +175,72 @@ tailscale_hostname() {
   parse_tailscale_status_json hostname "${status_json}"
 }
 
+tailscale_auth_url() {
+  local status_json
+  status_json=$(tailscale status --json 2>/dev/null) || return 1
+  parse_tailscale_status_json auth_url "${status_json}"
+}
+
 tailscale_ssh_enabled() {
   local prefs_json run_ssh
   prefs_json=$(tailscale debug prefs 2>/dev/null) || return 1
   run_ssh=$(parse_tailscale_prefs_json run_ssh "${prefs_json}") || return 1
   [[ "${run_ssh}" == "true" ]]
+}
+
+wait_for_tailscale_running() {
+  local wait_seconds
+  wait_seconds=$(tailscale_auth_wait_seconds)
+  local deadline=$((SECONDS + wait_seconds))
+  local backend_state=""
+
+  while [[ "${SECONDS}" -lt "${deadline}" ]]; do
+    backend_state=$(tailscale_backend_state || true)
+    if [[ "${backend_state}" == "Running" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  return 1
+}
+
+print_tailscale_auth_timeout() {
+  local auth_url="${1:-}"
+  local wait_seconds
+  wait_seconds=$(tailscale_auth_wait_seconds)
+
+  if [[ -z "${auth_url}" ]]; then
+    auth_url=$(tailscale_auth_url 2>/dev/null || true)
+  fi
+
+  echo "Tailscale authentication timed out after ${wait_seconds}s." >&2
+  if [[ -n "${auth_url}" ]]; then
+    echo "Authentication URL: ${auth_url}" >&2
+  fi
+  echo "Approve the node in your browser, then rerun:" >&2
+  echo "  ${RERUN_COMMAND}" >&2
+  exit 1
+}
+
+tailscale_up_and_wait() {
+  local hostname=$1
+  local wait_seconds up_output auth_url=""
+  wait_seconds=$(tailscale_auth_wait_seconds)
+
+  echo "Starting Tailscale authentication (browser approval required)..."
+  echo "Hostname: ${hostname}"
+  up_output=$(sudo tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" 2>&1) || true
+  if [[ -n "${up_output}" ]]; then
+    echo "${up_output}"
+    auth_url=$(printf '%s\n' "${up_output}" | grep -Eo 'https://[^[:space:]]+' | head -n1 || true)
+  fi
+
+  if wait_for_tailscale_running; then
+    return 0
+  fi
+
+  print_tailscale_auth_timeout "${auth_url}"
 }
 
 validate_tailscale_repo_file() {
@@ -228,12 +315,13 @@ install_tailscale_repo() {
 stage_preflight() {
   STAGE="preflight"
 
-  if [[ "${BOOTSTRAP_TEST_EUID:-${EUID}}" -eq 0 ]]; then
+  if [[ "$(test_override BOOTSTRAP_TEST_EUID "${EUID}")" -eq 0 ]]; then
     echo "Do not run this script as root. Run as a normal user with sudo access." >&2
     return 1
   fi
 
-  local os_release="${BOOTSTRAP_OS_RELEASE:-/etc/os-release}"
+  local os_release
+  os_release=$(test_override BOOTSTRAP_OS_RELEASE "/etc/os-release")
   if [[ ! -f "${os_release}" ]]; then
     echo "Unsupported operating system: missing ${os_release}" >&2
     exit 1
@@ -269,7 +357,8 @@ stage_preflight() {
 stage_repository() {
   STAGE="repository"
 
-  local repo_file="${BOOTSTRAP_TAILSCALE_REPO:-/etc/yum.repos.d/tailscale.repo}"
+  local repo_file
+  repo_file=$(test_override BOOTSTRAP_TAILSCALE_REPO "/etc/yum.repos.d/tailscale.repo")
   if [[ -f "${repo_file}" ]] && validate_tailscale_repo_file "${repo_file}"; then
     echo "Tailscale repository already configured."
     return
@@ -321,12 +410,17 @@ stage_authenticate() {
   backend_state=$(tailscale_backend_state || true)
 
   if [[ "${backend_state}" == "Running" ]]; then
-    echo "Tailscale already connected; enabling SSH without reauthentication..."
-    sudo tailscale set --ssh=true --hostname="${hostname}"
+    local current_hostname=""
+    current_hostname=$(tailscale_hostname || true)
+    if [[ "${current_hostname}" != "${hostname}" ]]; then
+      echo "Tailscale already connected; updating hostname to ${hostname}..."
+      sudo tailscale set --ssh=true --hostname="${hostname}"
+    else
+      echo "Tailscale already connected; enabling SSH without reauthentication..."
+      sudo tailscale set --ssh=true --hostname="${hostname}"
+    fi
   else
-    echo "Starting Tailscale authentication (browser approval required)..."
-    echo "Hostname: ${hostname}"
-    sudo tailscale up --ssh --hostname="${hostname}"
+    tailscale_up_and_wait "${hostname}"
   fi
 }
 
