@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "bootstrap",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-09-06",
+  "routes": [
+    {
+      "pattern": "bootstrap.yaronhersh.xyz/*",
+      "zone_name": "yaronhersh.xyz"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.sh", "**/*.ps1", "**/*.json"],
+      "fallthrough": true
+    }
+  ]
+}
