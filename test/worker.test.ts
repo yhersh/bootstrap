@@ -62,13 +62,22 @@ describe("bootstrap worker routes", () => {
   it("serves manifest and healthz", async () => {
     const manifest = await fetchWorker("/releases/manifest.json");
     expect(manifest.status).toBe(200);
-    expect(await manifest.json()).toEqual(releaseManifest);
+    const manifestJson = (await manifest.json()) as {
+      scripts: { fedora: { sha256: string }; windows: { sha256: string } };
+    };
+    expect(manifestJson).toEqual(releaseManifest);
+    expect(manifestJson.scripts.fedora.sha256).toMatch(/^[a-f0-9]{64}$/);
 
     const health = await fetchWorker("/healthz");
     expect(health.status).toBe(200);
     expect(health.headers.get("Cache-Control")).toBe("no-store");
-    const healthJson = (await health.json()) as { version: string };
+    const healthJson = (await health.json()) as {
+      version: string;
+      manifest: { scripts: { fedora: { sha256: string } } };
+    };
     expect(healthJson.version).toBe(BOOTSTRAP_VERSION);
+    expect(healthJson.manifest).toEqual(releaseManifest);
+    expect(healthJson.manifest.scripts.fedora.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("returns 404 for unknown paths", async () => {
