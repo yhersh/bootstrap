@@ -214,7 +214,20 @@ detect_brew_prefix() {
     return
   fi
 
-  if [[ "$(uname -m)" == "arm64" ]]; then
+  # An existing installation wins regardless of how this shell reports its
+  # architecture: under Rosetta `uname -m` says x86_64 on Apple Silicon and
+  # would otherwise steer us to /usr/local past a native /opt/homebrew.
+  local candidate
+  for candidate in /opt/homebrew /usr/local; do
+    if [[ -x "${candidate}/bin/brew" ]]; then
+      echo "${candidate}"
+      return
+    fi
+  done
+
+  # Nothing installed yet: pick by the hardware, not the (possibly translated)
+  # process architecture.
+  if [[ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" == "1" || "$(uname -m)" == "arm64" ]]; then
     echo /opt/homebrew
   else
     echo /usr/local
@@ -315,8 +328,24 @@ tailscale_up_and_wait() {
   # (seen on a Lume VM run).
   local up_log="${TMPDIR_BOOTSTRAP}/tailscale-up.log"
   : >"${up_log}"
+  # A backgrounded sudo cannot answer a password prompt (its stdin is
+  # /dev/null). The preflight `sudo -v` normally leaves a cached timestamp;
+  # when this Mac disables caching (timestamp_timeout=0), fall back to the
+  # foreground form and say why the URL will only show when `up` returns.
+  if ! sudo -n true 2>/dev/null; then
+    echo "sudo needs a password for every command on this Mac; the login URL appears when 'tailscale up' returns."
+    up_output=$(sudo tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" 2>&1) || true
+    if [[ -n "${up_output}" ]]; then
+      echo "${up_output}"
+      auth_url=$(printf '%s\n' "${up_output}" | grep -Eo 'https://[^[:space:]]+' | head -n1 || true)
+    fi
+    if wait_for_tailscale_running; then
+      return 0
+    fi
+    print_tailscale_auth_timeout "${auth_url}"
+  fi
   # shellcheck disable=SC2024  # the log must be user-owned (it lives in the private temp dir), not root's
-  sudo tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" >"${up_log}" 2>&1 &
+  sudo -n tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" >"${up_log}" 2>&1 &
   local up_pid=$!
   while kill -0 "${up_pid}" 2>/dev/null; do
     if [[ -z "${auth_url}" ]]; then

@@ -8,6 +8,19 @@ case "${1:-}" in
   -v)
     exit 0
     ;;
+  -n)
+    # Non-interactive sudo. SUDO_MOCK_NONINTERACTIVE_FAIL=1 models a Mac with
+    # timestamp caching disabled (every sudo needs a password).
+    if [[ "${SUDO_MOCK_NONINTERACTIVE_FAIL:-}" == "1" ]]; then
+      echo "sudo: a password is required" >&2
+      exit 1
+    fi
+    shift
+    exec "$0" "$@"
+    ;;
+  true)
+    exit 0
+    ;;
   enable)
     if [[ "${2:-}" == "tailscaled" ]]; then
       touch "${STATE_DIR}/tailscaled-enabled"
