@@ -4,14 +4,19 @@
 #
 # Optional components (download first when piping):
 #   irm https://bootstrap.yaronhersh.xyz/windows -OutFile bootstrap-windows.ps1
-#   .\bootstrap-windows.ps1 -With Jump,Sunshine
+#   .\bootstrap-windows.ps1 -With Sunshine
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string[]] $With = @()
 )
 
+$PSNativeCommandUseErrorActionPreference = $true
 $ErrorActionPreference = 'Stop'
+
+$TailscaleRemoteCidr = '100.64.0.0/10'
+$TailscaleSshRuleName = 'OpenSSH-Server-In-TCP-Tailscale'
+$DefaultOpenSshRuleName = 'OpenSSH-Server-In-TCP'
 
 function Test-IsElevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -22,6 +27,26 @@ function Test-IsElevated {
 function Write-StageMessage {
     param([string] $Message)
     Write-Host $Message
+}
+
+function Assert-LastExitCode {
+    param(
+        [string] $CommandDescription
+    )
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native command failed ($CommandDescription): exit code $LASTEXITCODE"
+    }
+}
+
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock] $ScriptBlock,
+        [Parameter(Mandatory = $true)][string] $Description
+    )
+
+    & $ScriptBlock
+    Assert-LastExitCode -CommandDescription $Description
 }
 
 function Ensure-WingetPackage {
@@ -44,7 +69,202 @@ function Ensure-WingetPackage {
     }
 
     Write-StageMessage "Installing $DisplayName ($Id)..."
-    winget install --id $Id --exact --accept-package-agreements --accept-source-agreements
+    Invoke-NativeCommand -ScriptBlock {
+        winget install --id $Id --exact --accept-package-agreements --accept-source-agreements
+    } -Description "winget install $Id"
+}
+
+function Resolve-PowerShellPath {
+    $candidates = @(
+        "$env:ProgramFiles\PowerShell\7\pwsh.exe",
+        "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    throw 'PowerShell executable not found at system paths for OpenSSH default shell.'
+}
+
+function Get-TailscaleNetAdapter {
+    return Get-NetAdapter -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Status -ne 'Disabled' -and (
+                $_.Name -like 'Tailscale*' -or $_.InterfaceDescription -like '*Tailscale*'
+            )
+        } |
+        Select-Object -First 1
+}
+
+function Get-SshInboundAllowRules {
+    $rules = @()
+
+    $candidateRules = Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow -ErrorAction SilentlyContinue
+    foreach ($rule in $candidateRules) {
+        $portFilter = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue
+        if (-not $portFilter) {
+            continue
+        }
+
+        $localPorts = @($portFilter.LocalPort)
+        if ($portFilter.Protocol -ne 'TCP' -or '22' -notin $localPorts) {
+            continue
+        }
+
+        $addressFilter = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue
+        $interfaceFilter = Get-NetFirewallInterfaceFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue
+
+        $rules += [PSCustomObject]@{
+            Rule              = $rule
+            RemoteAddress     = $addressFilter.RemoteAddress
+            InterfaceAlias    = $interfaceFilter.InterfaceAlias
+        }
+    }
+
+    return $rules
+}
+
+function Test-IsAcceptableSshFirewallRule {
+    param(
+        [Parameter(Mandatory = $true)] $RuleInfo
+    )
+
+    if ($RuleInfo.RemoteAddress -ne $TailscaleRemoteCidr) {
+        return $false
+    }
+
+    $tailscaleAdapter = Get-TailscaleNetAdapter
+    if ($tailscaleAdapter) {
+        $aliases = @($RuleInfo.InterfaceAlias)
+        if ($aliases.Count -eq 0 -or $aliases -contains 'Any' -or $aliases -notcontains $tailscaleAdapter.Name) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Disable-BroadSshFirewallRules {
+    $defaultRule = Get-NetFirewallRule -Name $DefaultOpenSshRuleName -ErrorAction SilentlyContinue
+    if ($defaultRule -and $defaultRule.Enabled -eq 'True') {
+        if ($WhatIfPreference) {
+            Write-StageMessage "WhatIf: would disable firewall rule $DefaultOpenSshRuleName."
+        }
+        else {
+            Write-StageMessage "Disabling default OpenSSH firewall rule ($DefaultOpenSshRuleName)..."
+            Disable-NetFirewallRule -Name $DefaultOpenSshRuleName | Out-Null
+        }
+    }
+
+    foreach ($ruleInfo in Get-SshInboundAllowRules) {
+        if (Test-IsAcceptableSshFirewallRule -RuleInfo $ruleInfo) {
+            continue
+        }
+
+        $ruleName = $ruleInfo.Rule.Name
+        if ($WhatIfPreference) {
+            Write-StageMessage "WhatIf: would disable broad SSH firewall rule $ruleName."
+            continue
+        }
+
+        Write-StageMessage "Disabling broad SSH firewall rule $ruleName..."
+        Disable-NetFirewallRule -Name $ruleName | Out-Null
+    }
+}
+
+function Ensure-TailscaleScopedSshFirewallRule {
+    $existingRule = Get-NetFirewallRule -Name $TailscaleSshRuleName -ErrorAction SilentlyContinue
+    if ($existingRule -and $existingRule.Enabled -eq 'True') {
+        $ruleInfo = Get-SshInboundAllowRules | Where-Object { $_.Rule.Name -eq $TailscaleSshRuleName } | Select-Object -First 1
+        if ($ruleInfo -and (Test-IsAcceptableSshFirewallRule -RuleInfo $ruleInfo)) {
+            Write-StageMessage 'Tailscale-scoped SSH firewall rule already present.'
+            return
+        }
+    }
+
+    if ($WhatIfPreference) {
+        Write-StageMessage "WhatIf: would create firewall rule $TailscaleSshRuleName for $TailscaleRemoteCidr."
+        return
+    }
+
+    Write-StageMessage "Creating Tailscale-scoped SSH firewall rule ($TailscaleRemoteCidr)..."
+    $ruleParams = @{
+        Name          = $TailscaleSshRuleName
+        DisplayName   = 'OpenSSH Server (sshd) - Tailscale only'
+        Enabled       = 'True'
+        Direction     = 'Inbound'
+        Protocol      = 'TCP'
+        Action        = 'Allow'
+        LocalPort     = 22
+        RemoteAddress = $TailscaleRemoteCidr
+    }
+
+    $tailscaleAdapter = Get-TailscaleNetAdapter
+    if ($tailscaleAdapter) {
+        $ruleParams.InterfaceAlias = $tailscaleAdapter.Name
+    }
+
+    New-NetFirewallRule @ruleParams | Out-Null
+}
+
+function Assert-SshFirewallPolicy {
+    if ($WhatIfPreference) {
+        return
+    }
+
+    $allowRules = Get-SshInboundAllowRules
+    $acceptableRules = @($allowRules | Where-Object { Test-IsAcceptableSshFirewallRule -RuleInfo $_ })
+
+    if ($acceptableRules.Count -ne 1) {
+        throw "Expected exactly one Tailscale-scoped SSH allow rule; found $($acceptableRules.Count)."
+    }
+
+    if ($acceptableRules[0].Rule.Name -ne $TailscaleSshRuleName) {
+        throw "Unexpected SSH allow rule name: $($acceptableRules[0].Rule.Name)."
+    }
+
+    foreach ($ruleInfo in $allowRules) {
+        if (Test-IsAcceptableSshFirewallRule -RuleInfo $ruleInfo) {
+            continue
+        }
+
+        throw "Broad SSH inbound allow rule remains enabled: $($ruleInfo.Rule.Name)"
+    }
+}
+
+function Ensure-OpenSshDefaultShell {
+    param(
+        [Parameter(Mandatory = $true)][string] $PowerShellPath
+    )
+
+    $defaultShellKey = 'HKLM:\SOFTWARE\OpenSSH'
+
+    if (-not (Test-Path $defaultShellKey)) {
+        if ($WhatIfPreference) {
+            Write-StageMessage "WhatIf: would create $defaultShellKey and set DefaultShell to $PowerShellPath."
+            return
+        }
+
+        New-Item -Path $defaultShellKey -Force | Out-Null
+        New-ItemProperty -Path $defaultShellKey -Name DefaultShell -Value $PowerShellPath -PropertyType String -Force | Out-Null
+        return
+    }
+
+    $currentShell = (Get-ItemProperty -Path $defaultShellKey -Name DefaultShell -ErrorAction SilentlyContinue).DefaultShell
+    if ($currentShell -ne $PowerShellPath) {
+        if ($WhatIfPreference) {
+            Write-StageMessage "WhatIf: would set OpenSSH DefaultShell to $PowerShellPath."
+            return
+        }
+
+        Set-ItemProperty -Path $defaultShellKey -Name DefaultShell -Value $PowerShellPath
+        return
+    }
+
+    Write-StageMessage 'OpenSSH DefaultShell already set to PowerShell.'
 }
 
 function Ensure-OpenSshServer {
@@ -73,6 +293,9 @@ function Ensure-OpenSshServer {
         throw 'sshd service not found after OpenSSH Server installation.'
     }
 
+    $powerShellPath = Resolve-PowerShellPath
+    Ensure-OpenSshDefaultShell -PowerShellPath $powerShellPath
+
     if ($service.StartType -ne 'Automatic') {
         if ($WhatIfPreference) {
             Write-StageMessage 'WhatIf: would set sshd startup type to Automatic.'
@@ -82,66 +305,40 @@ function Ensure-OpenSshServer {
         }
     }
 
+    Disable-BroadSshFirewallRules
+    Ensure-TailscaleScopedSshFirewallRule
+    Assert-SshFirewallPolicy
+
     if ($service.Status -ne 'Running') {
         if ($WhatIfPreference) {
             Write-StageMessage 'WhatIf: would start sshd service.'
         }
         else {
+            Write-StageMessage 'Starting sshd service...'
             Start-Service sshd
         }
     }
     else {
         Write-StageMessage 'sshd service already running.'
     }
+}
 
-    $ruleName = 'OpenSSH-Server-In-TCP'
-    $existingRule = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
-    if (-not $existingRule) {
-        if ($WhatIfPreference) {
-            Write-StageMessage 'WhatIf: would create firewall rule OpenSSH-Server-In-TCP.'
-        }
-        else {
-            New-NetFirewallRule -Name $ruleName -DisplayName 'OpenSSH Server (sshd)' `
-                -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
-        }
-    }
-    else {
-        Write-StageMessage 'OpenSSH firewall rule already present.'
+function Get-TailscaleBackendState {
+    $statusJson = & tailscale status --json 2>$null
+    Assert-LastExitCode -CommandDescription 'tailscale status --json'
+
+    if (-not $statusJson) {
+        throw 'tailscale status --json returned no output.'
     }
 
-    $defaultShellKey = 'HKLM:\SOFTWARE\OpenSSH'
-    $pwshPath = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
-    if (-not $pwshPath) {
-        $pwshPath = (Get-Command powershell -ErrorAction SilentlyContinue).Source
+    try {
+        $parsed = $statusJson | ConvertFrom-Json
+    }
+    catch {
+        throw 'tailscale status --json returned invalid JSON.'
     }
 
-    if (-not $pwshPath) {
-        throw 'PowerShell executable not found for OpenSSH default shell.'
-    }
-
-    if (-not (Test-Path $defaultShellKey)) {
-        if ($WhatIfPreference) {
-            Write-StageMessage "WhatIf: would create $defaultShellKey and set DefaultShell to $pwshPath."
-        }
-        else {
-            New-Item -Path $defaultShellKey -Force | Out-Null
-            New-ItemProperty -Path $defaultShellKey -Name DefaultShell -Value $pwshPath -PropertyType String -Force | Out-Null
-        }
-    }
-    else {
-        $currentShell = (Get-ItemProperty -Path $defaultShellKey -Name DefaultShell -ErrorAction SilentlyContinue).DefaultShell
-        if ($currentShell -ne $pwshPath) {
-            if ($WhatIfPreference) {
-                Write-StageMessage "WhatIf: would set OpenSSH DefaultShell to $pwshPath."
-            }
-            else {
-                Set-ItemProperty -Path $defaultShellKey -Name DefaultShell -Value $pwshPath
-            }
-        }
-        else {
-            Write-StageMessage 'OpenSSH DefaultShell already set to PowerShell.'
-        }
-    }
+    return [string]$parsed.BackendState
 }
 
 function Ensure-Tailscale {
@@ -166,48 +363,34 @@ function Ensure-Tailscale {
         throw 'tailscale CLI not found after installation.'
     }
 
-    $statusJson = & tailscale status --json 2>$null
-    $connected = $false
-    if ($statusJson) {
-        try {
-            $parsed = $statusJson | ConvertFrom-Json
-            $connected = ($parsed.BackendState -eq 'Running')
-        }
-        catch {
-            $connected = $false
-        }
+    $backendState = $null
+    try {
+        $backendState = Get-TailscaleBackendState
+    }
+    catch {
+        $backendState = $null
     }
 
-    if ($connected) {
-        Write-StageMessage 'Tailscale already connected; enabling SSH without reauthentication...'
-        if ($WhatIfPreference) {
-            Write-StageMessage 'WhatIf: would run tailscale set --ssh=true.'
-        }
-        else {
-            & tailscale set --ssh=true
-        }
+    if ($backendState -eq 'Running') {
+        Write-StageMessage 'Tailscale already connected.'
+        return
     }
-    else {
-        Write-StageMessage 'Starting Tailscale authentication (browser approval required)...'
-        if ($WhatIfPreference) {
-            Write-StageMessage 'WhatIf: would run tailscale up --ssh and print the auth URL.'
-        }
-        else {
-            & tailscale up --ssh
-        }
+
+    Write-StageMessage 'Starting Tailscale authentication (browser approval required)...'
+    if ($WhatIfPreference) {
+        Write-StageMessage 'WhatIf: would run tailscale up and print the auth URL.'
+        return
     }
+
+    Invoke-NativeCommand -ScriptBlock {
+        tailscale up
+    } -Description 'tailscale up'
 }
 
 function Resolve-OptionalComponent {
     param([Parameter(Mandatory = $true)][string] $Name)
 
     switch ($Name.ToLowerInvariant()) {
-        'jump' {
-            return @{
-                Id          = '9NBLGGH4Z1SP'
-                DisplayName = 'Jump Desktop Connect'
-            }
-        }
         'sunshine' {
             return @{
                 Id          = 'LizardByte.Sunshine'
@@ -215,7 +398,7 @@ function Resolve-OptionalComponent {
             }
         }
         default {
-            throw "Unknown optional component: $Name. Supported values: Jump, Sunshine."
+            throw "Unknown optional component: $Name. Supported values: Sunshine."
         }
     }
 }
@@ -234,12 +417,31 @@ function Ensure-OptionalComponents {
         $resolved = Resolve-OptionalComponent -Name $componentName
 
         $search = winget search --id $resolved.Id --exact --accept-source-agreements 2>$null
+        Assert-LastExitCode -CommandDescription "winget search $($resolved.Id)"
         if (-not $search -or ($search -notmatch [regex]::Escape($resolved.Id))) {
             throw "winget package id not found: $($resolved.Id) ($($resolved.DisplayName))"
         }
 
         Ensure-WingetPackage -Id $resolved.Id -DisplayName $resolved.DisplayName
     }
+}
+
+function Verify-BootstrapState {
+    if ($WhatIfPreference) {
+        return
+    }
+
+    $backendState = Get-TailscaleBackendState
+    if ($backendState -ne 'Running') {
+        throw "Verification failed: Tailscale backend state is '$backendState' (expected Running)."
+    }
+
+    $service = Get-Service -Name sshd -ErrorAction Stop
+    if ($service.Status -ne 'Running') {
+        throw 'Verification failed: sshd is not running.'
+    }
+
+    Assert-SshFirewallPolicy
 }
 
 if (-not (Test-IsElevated)) {
@@ -257,6 +459,7 @@ Ensure-Tailscale
 Ensure-OpenSshServer
 Ensure-WingetPackage -Id 'Python.Python.3.12' -DisplayName 'Python 3.12'
 Ensure-OptionalComponents
+Verify-BootstrapState
 
 Write-StageMessage ''
 Write-StageMessage 'Remote access bootstrap complete.'
