@@ -149,6 +149,104 @@ EOF
   rm -f "${truncated_script}"
 }
 
+@test "truncation before EOF marker does not execute stages" {
+  setup_fake_fedora
+  local truncated_script
+  truncated_script=$(mktemp)
+  python3 - "${PROJECT_ROOT}/scripts/fedora.sh" "${truncated_script}" <<'PY'
+import pathlib
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text()
+marker = "# bootstrap-entry-v1\n"
+index = text.rfind(marker)
+if index == -1:
+    raise SystemExit('EOF marker not found')
+pathlib.Path(sys.argv[2]).write_text(text[:index])
+PY
+  run bash "${truncated_script}"
+  [ ! -f "${BATS_MOCK_STATE_DIR}/tailscale-repo" ]
+  [ ! -f "${BATS_MOCK_STATE_DIR}/tailscale-installed" ]
+  rm -f "${truncated_script}"
+}
+
+@test "no byte prefix within final entrypoint lines executes stages" {
+  setup_fake_fedora
+  python3 - "${PROJECT_ROOT}/scripts/fedora.sh" "${BATS_MOCK_STATE_DIR}" <<'PY'
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+source = pathlib.Path(sys.argv[1])
+state_dir = pathlib.Path(sys.argv[2])
+data = source.read_bytes()
+lines = data.splitlines(keepends=True)
+if len(lines) < 2:
+    raise SystemExit('expected at least two final lines')
+
+tail_start = sum(len(line) for line in lines[:-2])
+final_two_len = len(lines[-2]) + len(lines[-1])
+env = os.environ.copy()
+for end in range(tail_start + 1, tail_start + final_two_len):
+    truncated = data[:end]
+    with tempfile.NamedTemporaryFile('wb', suffix='.sh', delete=False) as handle:
+        handle.write(truncated)
+        script_path = handle.name
+    (state_dir / 'tailscale-repo').unlink(missing_ok=True)
+    (state_dir / 'tailscale-installed').unlink(missing_ok=True)
+    subprocess.run(['bash', script_path], env=env, capture_output=True)
+    pathlib.Path(script_path).unlink(missing_ok=True)
+    if (state_dir / 'tailscale-repo').exists() or (state_dir / 'tailscale-installed').exists():
+        raise SystemExit(f'stages executed for truncation ending at byte {end}')
+PY
+}
+
+@test "connected node with RunSSH enabled verifies successfully" {
+  setup_fake_fedora
+  export TAILSCALE_BACKEND_STATE=Running
+  export TAILSCALE_RUN_SSH=true
+  run_bootstrap
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Remote access ready"* ]]
+}
+
+@test "connected node with RunSSH disabled fails verification" {
+  setup_fake_fedora
+  export TAILSCALE_BACKEND_STATE=Running
+  export TAILSCALE_RUN_SSH=false
+  export TAILSCALE_LEAVE_RUN_SSH=false
+  run_bootstrap
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Tailscale SSH is not enabled"* ]]
+}
+
+@test "poisoned Tailscale repository is rejected" {
+  setup_fake_fedora
+  cat >"${BOOTSTRAP_TAILSCALE_REPO}" <<'EOF'
+[tailscale-stable]
+name=Tailscale stable
+baseurl=https://pkgs.tailscale.com/stable/fedora/$basearch
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg
+enabled=1
+
+[evil-mirror]
+name=Evil mirror
+baseurl=https://evil.example/stable/fedora/$basearch
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg
+enabled=1
+EOF
+  run_bootstrap
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"failed validation; replacing"* ]]
+  [ -f "${BATS_MOCK_STATE_DIR}/tailscale-repo" ]
+}
+
 @test "invalid existing Tailscale repository is replaced" {
   setup_fake_fedora
   printf 'invalid repo content\n' >"${BOOTSTRAP_TAILSCALE_REPO}"
