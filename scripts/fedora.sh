@@ -14,7 +14,6 @@ readonly TAILSCALE_REPO_URL='https://pkgs.tailscale.com/stable/fedora/tailscale.
 
 STAGE="preflight"
 TMPDIR_BOOTSTRAP=""
-_BOOTSTRAP_INVOKE=''
 
 cleanup() {
   if [[ -n "${TMPDIR_BOOTSTRAP}" && -d "${TMPDIR_BOOTSTRAP}" ]]; then
@@ -31,6 +30,9 @@ on_error() {
 
 trap cleanup EXIT
 trap on_error ERR
+
+# Absorb truncated downloads that end mid-token on the final invocation line.
+__bootstrap_entry() { return 0; }
 
 require_cmd() {
   local cmd=$1
@@ -380,11 +382,9 @@ main() {
 }
 
 __bootstrap_entrypoint__() { main "$@"; }
-_BOOTSTRAP_INVOKE='__bootstrap_entrypoint__'
 __bootstrap_entry__() {
-  [[ "$(tail -n1 "$0")" == "# bootstrap-entry-v1" ]] || return 0
-  printf '\n' | cmp -s - <(tail -c 1 "$0") || return 0
-  "${_BOOTSTRAP_INVOKE}" "$@"
+  [[ "${!#}" == "bootstrap-entry-v1" ]] || return 0
+  set -- "${@:1:$#-1}"
+  __bootstrap_entrypoint__ "$@"
 }
-__bootstrap_entry__ "$@"
-# bootstrap-entry-v1
+__bootstrap_entry__ "$@" bootstrap-entry-v1
