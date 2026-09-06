@@ -64,6 +64,11 @@ case "${1:-}" in
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --ssh) ;;
+        --timeout=*| --timeout)
+          if [[ "$1" == "--timeout" ]]; then
+            shift
+          fi
+          ;;
         --hostname=*)
           hostname="${1#*=}"
           ;;

@@ -17,11 +17,33 @@ readonly RERUN_COMMAND='curl -fsSL https://bootstrap.yaronhersh.xyz/macos | bash
 readonly HOMEBREW_INSTALL_COMMIT='7a133dcc74051ee4efc79467ed215dfedf45aea2'
 readonly HOMEBREW_INSTALL_SHA256='12479a24be3f5307eecac7cde670fad7118640f031229e964f544b1367b52a41'
 readonly HOMEBREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/${HOMEBREW_INSTALL_COMMIT}/install.sh"
-readonly TAILSCALE_AUTH_WAIT_SECONDS="${BOOTSTRAP_TAILSCALE_AUTH_WAIT_SECONDS:-300}"
 
 STAGE="preflight"
 TMPDIR_BOOTSTRAP=""
 BREW_PREFIX=""
+
+bootstrap_in_test_mode() {
+  [[ -n "${BOOTSTRAP_TEST_HOME:-}" ]] || return 1
+  [[ -f "${0}" ]] || return 1
+  local script_real test_home_real
+  script_real=$(realpath "${0}" 2>/dev/null) || return 1
+  test_home_real=$(realpath "${BOOTSTRAP_TEST_HOME}" 2>/dev/null) || return 1
+  [[ "${script_real}" == "${test_home_real}/"* ]] || return 1
+}
+
+test_override() {
+  local var_name=$1
+  local default_value=${2:-}
+  if bootstrap_in_test_mode; then
+    printf '%s' "${!var_name:-$default_value}"
+  else
+    printf '%s' "${default_value}"
+  fi
+}
+
+tailscale_auth_wait_seconds() {
+  test_override BOOTSTRAP_TAILSCALE_AUTH_WAIT_SECONDS "300"
+}
 
 cleanup() {
   if [[ -n "${TMPDIR_BOOTSTRAP}" && -d "${TMPDIR_BOOTSTRAP}" ]]; then
@@ -127,6 +149,8 @@ if field == "backend_state":
 elif field == "hostname":
     self_info = data.get("Self") or {}
     print(self_info.get("HostName", ""))
+elif field == "auth_url":
+    print(data.get("AuthURL", ""))
 else:
     sys.exit(1)
 PY
@@ -164,6 +188,12 @@ tailscale_hostname() {
   parse_tailscale_status_json hostname "${status_json}"
 }
 
+tailscale_auth_url() {
+  local status_json
+  status_json=$(tailscale status --json 2>/dev/null) || return 1
+  parse_tailscale_status_json auth_url "${status_json}"
+}
+
 tailscale_ssh_enabled() {
   local prefs_json run_ssh
   prefs_json=$(tailscale debug prefs 2>/dev/null) || return 1
@@ -172,8 +202,10 @@ tailscale_ssh_enabled() {
 }
 
 detect_brew_prefix() {
-  if [[ -n "${BOOTSTRAP_BREW_PREFIX:-}" ]]; then
-    echo "${BOOTSTRAP_BREW_PREFIX}"
+  local test_prefix
+  test_prefix=$(test_override BOOTSTRAP_BREW_PREFIX "")
+  if [[ -n "${test_prefix}" ]]; then
+    echo "${test_prefix}"
     return
   fi
 
@@ -236,7 +268,9 @@ wait_for_tailscale_status() {
 }
 
 wait_for_tailscale_running() {
-  local deadline=$((SECONDS + TAILSCALE_AUTH_WAIT_SECONDS))
+  local wait_seconds
+  wait_seconds=$(tailscale_auth_wait_seconds)
+  local deadline=$((SECONDS + wait_seconds))
   local backend_state=""
 
   while [[ "${SECONDS}" -lt "${deadline}" ]]; do
@@ -247,10 +281,45 @@ wait_for_tailscale_running() {
     sleep 2
   done
 
-  echo "Tailscale authentication timed out after ${TAILSCALE_AUTH_WAIT_SECONDS}s." >&2
+  return 1
+}
+
+print_tailscale_auth_timeout() {
+  local auth_url="${1:-}"
+  local wait_seconds
+  wait_seconds=$(tailscale_auth_wait_seconds)
+
+  if [[ -z "${auth_url}" ]]; then
+    auth_url=$(tailscale_auth_url 2>/dev/null || true)
+  fi
+
+  echo "Tailscale authentication timed out after ${wait_seconds}s." >&2
+  if [[ -n "${auth_url}" ]]; then
+    echo "Authentication URL: ${auth_url}" >&2
+  fi
   echo "Approve the node in your browser, then rerun:" >&2
   echo "  ${RERUN_COMMAND}" >&2
-  return 1
+  exit 1
+}
+
+tailscale_up_and_wait() {
+  local hostname=$1
+  local wait_seconds up_output auth_url=""
+  wait_seconds=$(tailscale_auth_wait_seconds)
+
+  echo "Starting Tailscale authentication (browser approval required)..."
+  echo "Hostname: ${hostname}"
+  up_output=$(sudo tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" 2>&1) || true
+  if [[ -n "${up_output}" ]]; then
+    echo "${up_output}"
+    auth_url=$(printf '%s\n' "${up_output}" | grep -Eo 'https://[^[:space:]]+' | head -n1 || true)
+  fi
+
+  if wait_for_tailscale_running; then
+    return 0
+  fi
+
+  print_tailscale_auth_timeout "${auth_url}"
 }
 
 install_homebrew() {
@@ -265,9 +334,11 @@ install_homebrew() {
     exit 1
   fi
 
-  if [[ -n "${BOOTSTRAP_HOMEBREW_INSTALLER_CMD:-}" ]]; then
+  local installer_cmd
+  installer_cmd=$(test_override BOOTSTRAP_HOMEBREW_INSTALLER_CMD "")
+  if [[ -n "${installer_cmd}" ]]; then
     # shellcheck disable=SC2086
-    ${BOOTSTRAP_HOMEBREW_INSTALLER_CMD} "${installer}"
+    ${installer_cmd} "${installer}"
   else
     NONINTERACTIVE=1 bash "${installer}"
   fi
@@ -276,12 +347,12 @@ install_homebrew() {
 stage_preflight() {
   STAGE="preflight"
 
-  if [[ "${BOOTSTRAP_TEST_EUID:-${EUID}}" -eq 0 ]]; then
+  if [[ "$(test_override BOOTSTRAP_TEST_EUID "${EUID}")" -eq 0 ]]; then
     echo "Do not run this script as root. Run as a normal user with sudo access." >&2
     return 1
   fi
 
-  if [[ "$(uname -s)" != "Darwin" && -z "${BOOTSTRAP_ALLOW_NON_DARWIN:-}" ]]; then
+  if [[ "$(uname -s)" != "Darwin" && -z "$(test_override BOOTSTRAP_ALLOW_NON_DARWIN "")" ]]; then
     echo "Unsupported operating system: this script supports macOS only." >&2
     exit 1
   fi
@@ -303,7 +374,8 @@ stage_preflight() {
 stage_xcode() {
   STAGE="xcode"
 
-  local developer_dir="${BOOTSTRAP_DEVELOPER_DIR:-}"
+  local developer_dir
+  developer_dir=$(test_override BOOTSTRAP_DEVELOPER_DIR "")
   if [[ -n "${developer_dir}" ]]; then
     if [[ ! -d "${developer_dir}" ]]; then
       echo "Xcode Command Line Tools are not installed." >&2
@@ -374,7 +446,7 @@ stage_service() {
 
   ensure_brew_path
 
-  if brew services list 2>/dev/null | grep -Eq 'tailscale[[:space:]]+started'; then
+  if sudo brew services list 2>/dev/null | grep -Eq 'tailscale[[:space:]]+started'; then
     echo "tailscaled is already running via Homebrew services."
   else
     echo "Starting tailscaled via Homebrew services..."
@@ -392,7 +464,14 @@ stage_authenticate() {
   backend_state=$(tailscale_backend_state || true)
 
   if [[ "${backend_state}" == "Running" ]] && tailscale_ssh_enabled; then
-    echo "Tailscale already connected with SSH enabled; skipping authentication."
+    local current_hostname=""
+    current_hostname=$(tailscale_hostname || true)
+    if [[ "${current_hostname}" != "${hostname}" ]]; then
+      echo "Tailscale already connected; updating hostname to ${hostname}..."
+      sudo tailscale set --hostname="${hostname}"
+    else
+      echo "Tailscale already connected with SSH enabled; skipping authentication."
+    fi
     return
   fi
 
@@ -402,10 +481,7 @@ stage_authenticate() {
     return
   fi
 
-  echo "Starting Tailscale authentication (browser approval required)..."
-  echo "Hostname: ${hostname}"
-  sudo tailscale up --ssh --hostname="${hostname}"
-  wait_for_tailscale_running
+  tailscale_up_and_wait "${hostname}"
 }
 
 stage_verify() {

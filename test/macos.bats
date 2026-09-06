@@ -9,6 +9,7 @@ setup_fake_macos() {
 
   FAKE_BREW_PREFIX=$(mktemp -d)
   export FAKE_BREW_PREFIX
+  export BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}"
   export BOOTSTRAP_BREW_PREFIX="${FAKE_BREW_PREFIX}"
   export BOOTSTRAP_ALLOW_NON_DARWIN=1
   export BOOTSTRAP_DEVELOPER_DIR="${BATS_MOCK_STATE_DIR}/clt"
@@ -34,7 +35,8 @@ teardown() {
 }
 
 run_bootstrap() {
-  run env PATH="${FAKE_BREW_PREFIX}/bin:${PROJECT_ROOT}/test/helpers/bin:/usr/bin:/bin" \
+  run env BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}" \
+    PATH="${FAKE_BREW_PREFIX}/bin:${PROJECT_ROOT}/test/helpers/bin:/usr/bin:/bin" \
     bash "${PROJECT_ROOT}/scripts/macos.sh"
 }
 
@@ -80,9 +82,37 @@ run_bootstrap() {
   install_mock_brew
   export TAILSCALE_BACKEND_STATE=Running
   export TAILSCALE_RUN_SSH=true
+  export TAILSCALE_HOSTNAME=macbook-pro
   run_bootstrap
   [ "$status" -eq 0 ]
   [[ "$output" == *"already connected with SSH enabled"* ]]
+}
+
+@test "connected node with SSH enabled updates mismatched hostname" {
+  setup_fake_macos
+  install_mock_brew
+  export TAILSCALE_BACKEND_STATE=Running
+  export TAILSCALE_RUN_SSH=true
+  export TAILSCALE_HOSTNAME=old-host
+  export BOOTSTRAP_HOSTNAME=new-host
+  run_bootstrap
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"updating hostname to new-host"* ]]
+  [[ "$output" == *"Host: new-host"* ]]
+}
+
+@test "second run does not restart tailscaled service" {
+  setup_fake_macos
+  install_mock_brew
+  run_bootstrap
+  [ "$status" -eq 0 ]
+  [ "$(tr -d '[:space:]' <"${BATS_MOCK_STATE_DIR}/brew-services-start-count")" -eq 1 ]
+  export TAILSCALE_BACKEND_STATE=Running
+  export TAILSCALE_RUN_SSH=true
+  run_bootstrap
+  [ "$status" -eq 0 ]
+  [ "$(tr -d '[:space:]' <"${BATS_MOCK_STATE_DIR}/brew-services-start-count")" -eq 1 ]
+  [[ "$output" == *"already running via Homebrew services"* ]]
 }
 
 @test "connected node with RunSSH disabled fails verification" {
@@ -137,10 +167,19 @@ run_bootstrap() {
 
 @test "running as root is rejected" {
   setup_fake_macos
-  run env BOOTSTRAP_TEST_EUID=0 PATH="${FAKE_BREW_PREFIX}/bin:${PROJECT_ROOT}/test/helpers/bin:/usr/bin:/bin" \
+  run env BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}" BOOTSTRAP_TEST_EUID=0 \
+    PATH="${FAKE_BREW_PREFIX}/bin:${PROJECT_ROOT}/test/helpers/bin:/usr/bin:/bin" \
     bash "${PROJECT_ROOT}/scripts/macos.sh"
   [ "$status" -ne 0 ]
   [[ "$output" == *"Do not run this script as root"* ]]
+}
+
+@test "test overrides are ignored when invoked via bash -c" {
+  setup_fake_macos
+  install_mock_brew
+  run env PATH="${FAKE_BREW_PREFIX}/bin:${PROJECT_ROOT}/test/helpers/bin:/usr/bin:/bin" \
+    bash -c "BOOTSTRAP_TEST_HOME='${PROJECT_ROOT}' BOOTSTRAP_TEST_EUID=0 BOOTSTRAP_ALLOW_NON_DARWIN=1 bash -c \"\$(cat '${PROJECT_ROOT}/scripts/macos.sh')\""
+  [[ "$output" != *"Do not run this script as root"* ]]
 }
 
 @test "failure prints stage and rerun command without secrets" {

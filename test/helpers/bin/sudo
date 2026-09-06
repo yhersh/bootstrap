@@ -101,6 +101,14 @@ EOF
     exec tailscale up "$@"
     ;;
   brew)
+    if [[ "${2:-}" == "services" && "${3:-}" == "start" && "${4:-}" == "tailscale" ]]; then
+      count=0
+      if [[ -f "${STATE_DIR}/brew-services-start-count" ]]; then
+        count=$(tr -d '[:space:]' <"${STATE_DIR}/brew-services-start-count")
+      fi
+      count=$((count + 1))
+      echo "${count}" >"${STATE_DIR}/brew-services-start-count"
+    fi
     shift
     exec brew "$@"
     ;;
