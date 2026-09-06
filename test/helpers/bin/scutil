@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  --get)
+    if [[ "${2:-}" == "LocalHostName" ]]; then
+      echo "${MOCK_LOCAL_HOSTNAME:-macbook-pro}"
+      exit 0
+    fi
+    echo "mock scutil --get ${2:-}" >&2
+    exit 1
+    ;;
+  *)
+    echo "mock scutil $*" >&2
+    exit 1
+    ;;
+esac

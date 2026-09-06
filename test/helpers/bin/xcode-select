@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  -p)
+    if [[ -n "${BOOTSTRAP_DEVELOPER_DIR:-}" ]]; then
+      echo "${BOOTSTRAP_DEVELOPER_DIR}"
+      exit 0
+    fi
+    if [[ "${BOOTSTRAP_XCODE_SELECT_MISSING:-}" == "1" ]]; then
+      exit 1
+    fi
+    echo "/Library/Developer/CommandLineTools"
+    ;;
+  --install)
+    touch "${BATS_MOCK_STATE_DIR:-/tmp/bootstrap-bats-state}/xcode-install-requested"
+    echo "xcode-select: note: install requested for command line developer tools."
+    ;;
+  *)
+    echo "mock xcode-select $*" >&2
+    exit 1
+    ;;
+esac

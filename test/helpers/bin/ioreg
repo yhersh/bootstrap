@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$*" == *"IOPlatformExpertDevice"* ]]; then
+  uuid="${MOCK_PLATFORM_UUID:-abcdef12-3456-7890-abcd-ef1234567890}"
+  printf '"IOPlatformUUID" = "%s"\n' "${uuid}"
+  exit 0
+fi
+
+echo "mock ioreg $*" >&2
+exit 1

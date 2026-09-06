@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="${BATS_MOCK_STATE_DIR:-/tmp/bootstrap-bats-state}"
+mkdir -p "${STATE_DIR}"
+
+url=""
+dest=""
+args=("$@")
+i=0
+while [[ $i -lt ${#args[@]} ]]; do
+  case "${args[$i]}" in
+    -o)
+      if [[ $((i + 1)) -lt ${#args[@]} ]]; then
+        dest="${args[$((i + 1))]}"
+      fi
+      ;;
+    http://*|https://*)
+      url="${args[$i]}"
+      ;;
+  esac
+  i=$((i + 1))
+done
+
+if [[ -n "${dest}" && "${url}" == *"raw.githubusercontent.com/Homebrew/install/"*"/install.sh" ]]; then
+  mkdir -p "$(dirname "${dest}")"
+  fixture_dir="${BOOTSTRAP_TEST_FIXTURES_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../fixtures" && pwd)}"
+  if [[ "${MOCK_HOMEBREW_INSTALLER_SHA256_MISMATCH:-}" == "1" ]]; then
+    printf '#!/bin/bash\necho tampered installer\n' >"${dest}"
+  else
+    cp "${fixture_dir}/homebrew-install.sh" "${dest}"
+  fi
+  touch "${STATE_DIR}/homebrew-installer-downloaded"
+  exit 0
+fi
+
+if [[ -n "${dest}" && "${url}" == *"tailscale.repo" ]]; then
+  mkdir -p "$(dirname "${dest}")"
+  cat >"${dest}" <<'EOF'
+[tailscale-stable]
+name=Tailscale stable
+baseurl=https://pkgs.tailscale.com/stable/fedora/$basearch
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg
+enabled=1
+EOF
+  touch "${STATE_DIR}/tailscale-repo"
+  exit 0
+fi
+
+exec /usr/bin/curl "$@"
