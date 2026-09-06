@@ -415,9 +415,14 @@ stage_preflight() {
   require_cmd python3
   require_cmd scutil
 
-  if ! sudo -v; then
-    echo "sudo authorization required." >&2
-    exit 1
+  # A NOPASSWD user who is also in wheel/admin still gets prompted by `sudo -v`
+  # (the group rule matches too). Try the non-interactive form first; only
+  # prompt when it is genuinely needed. Seen on both Lume VM runs.
+  if ! sudo -n true 2>/dev/null; then
+    if ! sudo -v; then
+      echo "sudo authorization required." >&2
+      exit 1
+    fi
   fi
 
   TMPDIR_BOOTSTRAP=$(mktemp -d)
