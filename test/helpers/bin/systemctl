@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="${BATS_MOCK_STATE_DIR:-/tmp/bootstrap-bats-state}"
+
+service_name() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --quiet | -q) ;;
+      *)
+        echo "$1"
+        return
+        ;;
+    esac
+    shift
+  done
+}
+
+case "${1:-}" in
+  is-enabled)
+    shift
+    name=$(service_name "$@")
+    if [[ "${name}" == "tailscaled" && -f "${STATE_DIR}/tailscaled-enabled" ]]; then
+      exit 0
+    fi
+    exit 1
+    ;;
+  is-active)
+    shift
+    name=$(service_name "$@")
+    if [[ "${name}" == "tailscaled" && -f "${STATE_DIR}/tailscaled-active" ]]; then
+      exit 0
+    fi
+    exit 1
+    ;;
+  enable)
+    shift
+    name=$(service_name "$@")
+    if [[ "${name}" == "tailscaled" ]]; then
+      touch "${STATE_DIR}/tailscaled-enabled"
+      exit 0
+    fi
+    ;;
+  start)
+    shift
+    name=$(service_name "$@")
+    if [[ "${name}" == "tailscaled" ]]; then
+      touch "${STATE_DIR}/tailscaled-active"
+      exit 0
+    fi
+    ;;
+  *)
+    echo "mock systemctl $*" >&2
+    exit 1
+    ;;
+esac
