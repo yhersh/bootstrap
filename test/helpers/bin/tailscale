@@ -84,7 +84,13 @@ case "${1:-}" in
     if [[ "${TAILSCALE_LEAVE_RUN_SSH:-}" != "false" ]]; then
       echo "true" >"${STATE_DIR}/tailscale-run-ssh"
     fi
-    echo "Success. Visit https://login.tailscale.com/a/mock to authenticate."
+    if [[ -n "${TAILSCALE_UP_DELAY:-}" ]]; then
+      echo "To authenticate, visit: https://login.tailscale.com/a/mock"
+      sleep "${TAILSCALE_UP_DELAY}"
+      echo "Success."
+    else
+      echo "Success. Visit https://login.tailscale.com/a/mock to authenticate."
+    fi
     ;;
   set)
     shift
