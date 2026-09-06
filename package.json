@@ -6,10 +6,11 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "lint": "shellcheck scripts/fedora.sh && npm run lint:worker",
+    "lint": "shellcheck scripts/fedora.sh scripts/macos.sh && npm run lint:worker",
     "lint:worker": "tsc --noEmit",
-    "test": "npm run lint && npm run test:fedora && npm run test:windows && npm run test:worker",
+    "test": "npm run lint && npm run test:fedora && npm run test:macos && npm run test:windows && npm run test:worker",
     "test:fedora": "bats test/fedora.bats",
+    "test:macos": "bats test/macos.bats",
     "test:windows": "node scripts/run-windows-tests.mjs",
     "test:worker": "vitest run"
   },

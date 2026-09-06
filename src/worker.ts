@@ -1,6 +1,7 @@
 export const BOOTSTRAP_VERSION = "1.0.0";
 
 import fedoraScript from "../scripts/fedora.sh";
+import macosScript from "../scripts/macos.sh";
 import windowsScript from "../scripts/windows.ps1";
 import releaseManifest from "../releases/manifest.json";
 
@@ -78,6 +79,9 @@ function usageText(): string {
     "Fedora:",
     "  curl -fsSL https://bootstrap.yaronhersh.xyz/fedora | bash",
     "",
+    "macOS:",
+    "  curl -fsSL https://bootstrap.yaronhersh.xyz/macos | bash",
+    "",
     "Windows (Administrator PowerShell):",
     "  irm https://bootstrap.yaronhersh.xyz/windows | iex",
     "",
@@ -86,6 +90,10 @@ function usageText(): string {
     "  /fedora/v1              current stable within major v1",
     `  /fedora/v${BOOTSTRAP_VERSION}       immutable Fedora script`,
     `  /fedora/v${BOOTSTRAP_VERSION}.sha256  Fedora script checksum`,
+    "  /macos                  current stable macOS script",
+    "  /macos/v1               current stable within major v1",
+    `  /macos/v${BOOTSTRAP_VERSION}        immutable macOS script`,
+    `  /macos/v${BOOTSTRAP_VERSION}.sha256   macOS script checksum`,
     "  /windows                current stable Windows script",
     "  /releases/manifest.json release manifest",
     "  /healthz                build and release metadata",
@@ -107,7 +115,7 @@ function healthText(buildTimestamp: string): string {
   );
 }
 
-function resolveRoute(pathname: string): ScriptPayload | "usage" | "health" | "manifest" | "checksum" | null {
+function resolveRoute(pathname: string): ScriptPayload | "usage" | "health" | "manifest" | { kind: "checksum"; script: string; filename: string } | null {
   switch (pathname) {
     case "/":
       return "usage";
@@ -121,7 +129,13 @@ function resolveRoute(pathname: string): ScriptPayload | "usage" | "health" | "m
     case `/fedora/v${BOOTSTRAP_VERSION}`:
       return { body: fedoraScript, cacheControl: pathname.endsWith(BOOTSTRAP_VERSION) ? CACHE_IMMUTABLE : CACHE_MOVING };
     case `/fedora/v${BOOTSTRAP_VERSION}.sha256`:
-      return "checksum";
+      return { kind: "checksum", script: fedoraScript, filename: "fedora.sh" };
+    case "/macos":
+    case "/macos/v1":
+    case `/macos/v${BOOTSTRAP_VERSION}`:
+      return { body: macosScript, cacheControl: pathname.endsWith(BOOTSTRAP_VERSION) ? CACHE_IMMUTABLE : CACHE_MOVING };
+    case `/macos/v${BOOTSTRAP_VERSION}.sha256`:
+      return { kind: "checksum", script: macosScript, filename: "macos.sh" };
     case "/windows":
       return { body: windowsScript, cacheControl: CACHE_MOVING };
     default:
@@ -190,9 +204,9 @@ async function handleGetOrHead(request: Request, env: Env): Promise<Response> {
     return new Response(body, { status: 200, headers });
   }
 
-  if (resolved === "checksum") {
-    const digest = await sha256Hex(fedoraScript);
-    const body = `${digest}  fedora.sh\n`;
+  if (resolved !== null && typeof resolved === "object" && "kind" in resolved && resolved.kind === "checksum") {
+    const digest = await sha256Hex(resolved.script);
+    const body = `${digest}  ${resolved.filename}\n`;
     if (request.method === "HEAD") {
       return new Response(null, {
         status: 200,
@@ -205,17 +219,21 @@ async function handleGetOrHead(request: Request, env: Env): Promise<Response> {
     return textResponse(body, 200, CACHE_IMMUTABLE);
   }
 
-  const { body, cacheControl } = resolved;
-  if (request.method === "HEAD") {
-    return new Response(null, {
-      status: 200,
-      headers: {
-        ...Object.fromEntries(scriptHeaders(cacheControl)),
-        "Content-Length": String(new TextEncoder().encode(body).byteLength),
-      },
-    });
+  if (typeof resolved === "object" && resolved !== null && "body" in resolved) {
+    const { body, cacheControl } = resolved;
+    if (request.method === "HEAD") {
+      return new Response(null, {
+        status: 200,
+        headers: {
+          ...Object.fromEntries(scriptHeaders(cacheControl)),
+          "Content-Length": String(new TextEncoder().encode(body).byteLength),
+        },
+      });
+    }
+    return textResponse(body, 200, cacheControl);
   }
-  return textResponse(body, 200, cacheControl);
+
+  return notFound();
 }
 
 export interface Env {
