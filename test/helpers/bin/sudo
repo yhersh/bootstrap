@@ -31,7 +31,15 @@ case "${1:-}" in
     done
     if [[ "${dest}" == *"tailscale.repo" ]]; then
       mkdir -p "$(dirname "${dest}")"
-      touch "${dest}"
+      cat >"${dest}" <<'EOF'
+[tailscale-stable]
+name=Tailscale stable
+baseurl=https://pkgs.tailscale.com/stable/fedora/$basearch
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg
+enabled=1
+EOF
       touch "${STATE_DIR}/tailscale-repo"
       exit 0
     fi
@@ -48,6 +56,41 @@ case "${1:-}" in
   tailscale)
     shift
     exec tailscale "$@"
+    ;;
+  install)
+    shift
+    mode="0644"
+    dest=""
+    src=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -m)
+          mode="$2"
+          shift 2
+          ;;
+        -o | -g)
+          shift 2
+          ;;
+        *)
+          if [[ -z "${src}" ]]; then
+            src="$1"
+          else
+            dest="$1"
+          fi
+          shift
+          ;;
+      esac
+    done
+    if [[ -z "${src}" || -z "${dest}" ]]; then
+      echo "mock sudo install: missing source or destination" >&2
+      exit 1
+    fi
+    mkdir -p "$(dirname "${dest}")"
+    cp "${src}" "${dest}"
+    chmod "${mode}" "${dest}"
+    if [[ "${dest}" == *"tailscale.repo" ]]; then
+      touch "${STATE_DIR}/tailscale-repo"
+    fi
     ;;
   set)
     shift

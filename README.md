@@ -17,12 +17,12 @@ Windows (Administrator PowerShell):
 irm https://bootstrap.yaronhersh.xyz/windows | iex
 ```
 
-Optional Windows components (Jump Desktop Connect, Sunshine) require saving
+Optional Windows components (Sunshine) require saving
 the script first when piping:
 
 ```powershell
 irm https://bootstrap.yaronhersh.xyz/windows -OutFile bootstrap-windows.ps1
-.\bootstrap-windows.ps1 -With Jump,Sunshine
+.\bootstrap-windows.ps1 -With Sunshine
 ```
 
 ## What runs
@@ -38,15 +38,15 @@ irm https://bootstrap.yaronhersh.xyz/windows -OutFile bootstrap-windows.ps1
 Optional hostname override:
 
 ```bash
-BOOTSTRAP_HOSTNAME=my-host curl -fsSL https://bootstrap.yaronhersh.xyz/fedora | bash
+BOOTSTRAP_HOSTNAME=my-host bash -c "$(curl -fsSL https://bootstrap.yaronhersh.xyz/fedora)"
 ```
 
 ### Windows (`scripts/windows.ps1`)
 
-- Installs Tailscale via winget (`Tailscale.Tailscale`) and runs `tailscale up --ssh`
-- Installs OpenSSH Server, starts `sshd`, opens the firewall, sets PowerShell as the default SSH shell
+- Installs Tailscale via winget (`Tailscale.Tailscale`) and runs `tailscale up`
+- Installs OpenSSH Server, restricts SSH firewall access to the Tailscale CIDR, starts `sshd`, and sets PowerShell as the default SSH shell
 - Ensures Python 3.12 is present via winget (`Python.Python.3.12`)
-- Optionally installs Jump Desktop Connect and Sunshine with `-With Jump,Sunshine`
+- Optionally installs Sunshine with `-With Sunshine`
 
 ## What it never does
 

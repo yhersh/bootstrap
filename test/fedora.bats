@@ -43,7 +43,15 @@ run_bootstrap() {
 
 @test "existing Tailscale repository and package are reused" {
   setup_fake_fedora
-  touch "${BOOTSTRAP_TAILSCALE_REPO}"
+  cat >"${BOOTSTRAP_TAILSCALE_REPO}" <<'EOF'
+[tailscale-stable]
+name=Tailscale stable
+baseurl=https://pkgs.tailscale.com/stable/fedora/$basearch
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg
+enabled=1
+EOF
   touch "${BATS_MOCK_STATE_DIR}/tailscale-installed"
   run_bootstrap
   [ "$status" -eq 0 ]
@@ -127,4 +135,25 @@ run_bootstrap() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"Bootstrap failed at stage"* ]]
   [[ "$output" == *"curl -fsSL https://bootstrap.yaronhersh.xyz/fedora | bash"* ]]
+}
+
+@test "truncated script executes nothing" {
+  setup_fake_fedora
+  local truncated_script
+  truncated_script=$(mktemp)
+  sed '$d' "${PROJECT_ROOT}/scripts/fedora.sh" >"${truncated_script}"
+  run bash "${truncated_script}"
+  [ "$status" -eq 0 ]
+  [ ! -f "${BATS_MOCK_STATE_DIR}/tailscale-repo" ]
+  [ ! -f "${BATS_MOCK_STATE_DIR}/tailscale-installed" ]
+  rm -f "${truncated_script}"
+}
+
+@test "invalid existing Tailscale repository is replaced" {
+  setup_fake_fedora
+  printf 'invalid repo content\n' >"${BOOTSTRAP_TAILSCALE_REPO}"
+  run_bootstrap
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"failed validation; replacing"* ]]
+  [ -f "${BATS_MOCK_STATE_DIR}/tailscale-repo" ]
 }
