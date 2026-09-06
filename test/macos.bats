@@ -98,6 +98,17 @@ run_bootstrap() {
   [[ "$output" == *"https://login.tailscale.com/a/mock"* ]]
 }
 
+@test "sudo without timestamp caching falls back to foreground tailscale up and still succeeds" {
+  setup_fake_macos
+  install_mock_brew
+  export SUDO_MOCK_NONINTERACTIVE_FAIL=1
+  run_bootstrap
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sudo needs a password for every command"* ]]
+  [[ "$output" == *"https://login.tailscale.com/a/mock"* ]]
+  [[ "$output" == *"Remote access ready"* ]]
+}
+
 @test "Homebrew is installed when missing" {
   setup_fake_macos
   export BOOTSTRAP_HOMEBREW_INSTALLER_CMD="${PROJECT_ROOT}/test/helpers/stub-homebrew-install.sh"
