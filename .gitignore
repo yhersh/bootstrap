@@ -2,3 +2,7 @@ node_modules/
 .wrangler/
 .dev.vars
 *.log
+
+# yhersh runtime writes session state here; only config.yaml is tracked
+.yhersh/*
+!.yhersh/config.yaml

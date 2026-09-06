@@ -1,0 +1,15 @@
+---
+repo_name: bootstrap
+scope:
+- Public, secretless stage-zero bootstrap scripts served from bootstrap.yaronhersh.xyz.
+repo_guardrails:
+- This repository is public. No secrets, tokens, auth keys or private hostnames in code, tests, fixtures or CI.
+- Scripts are bundled into the Worker at build time; never fetch them from GitHub at request time.
+- Deploying the Worker or touching DNS/routes is an operator action, never part of a PR.
+review:
+  analysis_gate_enabled: true
+  analysis_provider: github_threads
+  # The check-run the merge guard treats as review signal. Devin posts either
+  # "Devin Review" or "cubic · AI code reviewer"; the guard treats them as aliases.
+  analysis_check_name: "Devin Review"
+  human_approval_required: false
