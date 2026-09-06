@@ -1,7 +1,15 @@
 node_modules/
 .wrangler/
 .dev.vars
+.dev.vars*
 *.log
+.env*
+*.pem
+*.key
+id_ed25519*
+id_rsa*
+credentials.json
+coverage/
 
 # yhersh runtime writes session state here; only config.yaml is tracked
 .yhersh/*
