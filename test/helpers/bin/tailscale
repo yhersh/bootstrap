@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="${BATS_MOCK_STATE_DIR:-/tmp/bootstrap-bats-state}"
+mkdir -p "${STATE_DIR}"
+
+read_backend_state() {
+  if [[ -f "${STATE_DIR}/tailscale-backend" ]]; then
+    tr -d '[:space:]' <"${STATE_DIR}/tailscale-backend"
+  else
+    echo "${TAILSCALE_BACKEND_STATE:-NeedsLogin}"
+  fi
+}
+
+read_hostname() {
+  if [[ -f "${STATE_DIR}/tailscale-hostname" ]]; then
+    tr -d '[:space:]' <"${STATE_DIR}/tailscale-hostname"
+  else
+    echo "${TAILSCALE_HOSTNAME:-fedora-testhost}"
+  fi
+}
+
+read_run_ssh() {
+  if [[ -f "${STATE_DIR}/tailscale-run-ssh" ]]; then
+    tr -d '[:space:]' <"${STATE_DIR}/tailscale-run-ssh"
+  else
+    echo "${TAILSCALE_RUN_SSH:-false}"
+  fi
+}
+
+tailscale_json() {
+  local backend
+  backend=$(read_backend_state)
+  local hostname
+  hostname=$(read_hostname)
+  local run_ssh
+  run_ssh=$(read_run_ssh)
+  cat <<EOF
+{"BackendState":"${backend}","Self":{"HostName":"${hostname}","TailscaleIPs":["100.64.0.1"]},"Prefs":{"RunSSH":${run_ssh}}}
+EOF
+}
+
+case "${1:-}" in
+  status)
+    if [[ "${2:-}" == "--json" ]]; then
+      tailscale_json
+      exit 0
+    fi
+    if [[ "$(read_backend_state)" == "Running" ]]; then
+      echo "100.64.0.1 testhost"
+      exit 0
+    fi
+    echo "Logged out."
+    exit 1
+    ;;
+  up)
+    shift
+    hostname="fedora-testhost"
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --ssh) ;;
+        --hostname=*)
+          hostname="${1#*=}"
+          ;;
+        --hostname)
+          shift
+          hostname="$1"
+          ;;
+      esac
+      shift
+    done
+    echo "Running" >"${STATE_DIR}/tailscale-backend"
+    echo "${hostname}" >"${STATE_DIR}/tailscale-hostname"
+    echo "true" >"${STATE_DIR}/tailscale-run-ssh"
+    echo "Success. Visit https://login.tailscale.com/a/mock to authenticate."
+    ;;
+  set)
+    shift
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --ssh=true)
+          echo "true" >"${STATE_DIR}/tailscale-run-ssh"
+          ;;
+        --hostname=*)
+          echo "${1#*=}" >"${STATE_DIR}/tailscale-hostname"
+          ;;
+        --hostname)
+          shift
+          echo "$1" >"${STATE_DIR}/tailscale-hostname"
+          ;;
+      esac
+      shift
+    done
+    echo "Running" >"${STATE_DIR}/tailscale-backend"
+    ;;
+  ip)
+    if [[ "${TAILSCALE_NO_IP:-}" == "1" ]]; then
+      exit 1
+    fi
+    if [[ "${2:-}" == "-4" && "$(read_backend_state)" == "Running" ]]; then
+      echo "100.64.0.1"
+      exit 0
+    fi
+    exit 1
+    ;;
+  debug)
+    if [[ "${2:-}" == "prefs" ]]; then
+      echo "{\"RunSSH\": $(read_run_ssh)}"
+      exit 0
+    fi
+    ;;
+  *)
+    echo "mock tailscale $*" >&2
+    exit 1
+    ;;
+esac

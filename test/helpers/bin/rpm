@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="${BATS_MOCK_STATE_DIR:-/tmp/bootstrap-bats-state}"
+
+case "${1:-}" in
+  -q)
+    if [[ "${2:-}" == "tailscale" && -f "${STATE_DIR}/tailscale-installed" ]]; then
+      exit 0
+    fi
+    exit 1
+    ;;
+  *)
+    echo "mock rpm $*" >&2
+    exit 1
+    ;;
+esac

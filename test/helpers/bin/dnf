@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="${BATS_MOCK_STATE_DIR:-/tmp/bootstrap-bats-state}"
+mkdir -p "${STATE_DIR}"
+
+case "${1:-}" in
+  install)
+    if [[ "${2:-}" == "-y" && "${3:-}" == "tailscale" ]]; then
+      touch "${STATE_DIR}/tailscale-installed"
+      echo "Installed tailscale"
+    fi
+    ;;
+  *)
+    echo "mock dnf $*" >&2
+    exit 1
+    ;;
+esac
