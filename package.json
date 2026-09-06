@@ -1,0 +1,23 @@
+{
+  "name": "bootstrap",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "lint": "shellcheck scripts/fedora.sh && npm run lint:worker",
+    "lint:worker": "tsc --noEmit",
+    "test": "npm run lint && npm run test:fedora && npm run test:windows && npm run test:worker",
+    "test:fedora": "bats test/fedora.bats",
+    "test:windows": "node scripts/run-windows-tests.mjs",
+    "test:worker": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.71",
+    "@cloudflare/workers-types": "^4.20250906.0",
+    "typescript": "^5.9.2",
+    "vitest": "~3.2.0",
+    "wrangler": "4.35.0"
+  }
+}

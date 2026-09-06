@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "released": "2026-09-06",
+  "scripts": {
+    "fedora": {
+      "path": "scripts/fedora.sh",
+      "sha256": "8f43f8486a92af92300224be633c429d3da98d66c31c4719154f179cb6275d0a"
+    },
+    "windows": {
+      "path": "scripts/windows.ps1",
+      "sha256": "74e8ef712e5b86996e708f37deea6ef54a44bd7ad1aeb53bbee44cd84306fa9b"
+    }
+  }
+}
