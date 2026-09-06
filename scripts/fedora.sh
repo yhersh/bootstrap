@@ -2,11 +2,15 @@
 # Secretless Fedora remote-access bootstrap — stage zero.
 # Canonical invocation:
 #   curl -fsSL https://bootstrap.yaronhersh.xyz/fedora | bash
+#
+# Optional hostname override:
+#   BOOTSTRAP_HOSTNAME=my-host bash -c "$(curl -fsSL https://bootstrap.yaronhersh.xyz/fedora)"
 
 set -euo pipefail
 set -E
 
 readonly RERUN_COMMAND='curl -fsSL https://bootstrap.yaronhersh.xyz/fedora | bash'
+readonly TAILSCALE_REPO_URL='https://pkgs.tailscale.com/stable/fedora/tailscale.repo'
 
 STAGE="preflight"
 TMPDIR_BOOTSTRAP=""
@@ -50,8 +54,17 @@ is_generic_hostname() {
   esac
 }
 
+validate_hostname() {
+  local name=$1
+  if [[ ! "${name}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]]; then
+    echo "Invalid BOOTSTRAP_HOSTNAME: ${name}" >&2
+    exit 1
+  fi
+}
+
 resolve_bootstrap_hostname() {
   if [[ -n "${BOOTSTRAP_HOSTNAME:-}" ]]; then
+    validate_hostname "${BOOTSTRAP_HOSTNAME}"
     echo "${BOOTSTRAP_HOSTNAME}"
     return
   fi
@@ -60,6 +73,7 @@ resolve_bootstrap_hostname() {
   current=$(hostname -s 2>/dev/null || hostname)
 
   if ! is_generic_hostname "${current}"; then
+    validate_hostname "${current}"
     echo "${current}"
     return
   fi
@@ -75,6 +89,75 @@ resolve_bootstrap_hostname() {
   fi
 
   echo "fedora-${machine_id:0:8}"
+}
+
+parse_tailscale_status_json() {
+  local field=$1
+  local status_json=$2
+  python3 - "$field" "$status_json" <<'PY'
+import json
+import sys
+
+field = sys.argv[1]
+try:
+    data = json.loads(sys.argv[2])
+except json.JSONDecodeError:
+    sys.exit(1)
+
+if field == "backend_state":
+    print(data.get("BackendState", ""))
+elif field == "hostname":
+    self_info = data.get("Self") or {}
+    print(self_info.get("HostName", ""))
+elif field == "run_ssh":
+    prefs = data.get("Prefs") or {}
+    print("true" if prefs.get("RunSSH") else "false")
+else:
+    sys.exit(1)
+PY
+}
+
+tailscale_backend_state() {
+  local status_json
+  status_json=$(tailscale status --json 2>/dev/null) || return 1
+  parse_tailscale_status_json backend_state "${status_json}"
+}
+
+tailscale_hostname() {
+  local status_json
+  status_json=$(tailscale status --json 2>/dev/null) || return 1
+  parse_tailscale_status_json hostname "${status_json}"
+}
+
+tailscale_ssh_enabled() {
+  local status_json run_ssh
+  status_json=$(tailscale status --json 2>/dev/null) || return 1
+  run_ssh=$(parse_tailscale_status_json run_ssh "${status_json}") || return 1
+  [[ "${run_ssh}" == "true" ]]
+}
+
+validate_tailscale_repo_file() {
+  local file=$1
+
+  [[ -f "${file}" ]] || return 1
+  grep -q '^gpgcheck=1' "${file}" || return 1
+  grep -q '^repo_gpgcheck=1' "${file}" || return 1
+  grep -q 'pkgs\.tailscale\.com' "${file}" || return 1
+  grep -qE '^baseurl=.*pkgs\.tailscale\.com' "${file}" || return 1
+}
+
+install_tailscale_repo() {
+  local repo_file=$1
+  local tmp_repo="${TMPDIR_BOOTSTRAP}/tailscale.repo"
+
+  curl --proto '=https' --tlsv1.2 -fsSL -o "${tmp_repo}" "${TAILSCALE_REPO_URL}"
+
+  if ! validate_tailscale_repo_file "${tmp_repo}"; then
+    echo "Downloaded Tailscale repository file failed validation." >&2
+    exit 1
+  fi
+
+  sudo install -m 0644 -o root -g root "${tmp_repo}" "${repo_file}"
 }
 
 stage_preflight() {
@@ -102,8 +185,9 @@ stage_preflight() {
   require_cmd systemctl
   require_cmd curl
   require_cmd sudo
+  require_cmd python3
 
-  if ! curl -fsSL --max-time 15 https://pkgs.tailscale.com/ >/dev/null; then
+  if ! curl --proto '=https' --tlsv1.2 -fsSL --max-time 15 https://pkgs.tailscale.com/ >/dev/null; then
     echo "Cannot reach Tailscale package repository over HTTPS." >&2
     exit 1
   fi
@@ -121,14 +205,18 @@ stage_repository() {
   STAGE="repository"
 
   local repo_file="${BOOTSTRAP_TAILSCALE_REPO:-/etc/yum.repos.d/tailscale.repo}"
-  if [[ -f "${repo_file}" ]]; then
+  if [[ -f "${repo_file}" ]] && validate_tailscale_repo_file "${repo_file}"; then
     echo "Tailscale repository already configured."
     return
   fi
 
-  echo "Configuring Tailscale official Fedora repository..."
-  sudo curl -fsSL -o "${repo_file}" \
-    https://pkgs.tailscale.com/stable/fedora/tailscale.repo
+  if [[ -f "${repo_file}" ]]; then
+    echo "Existing Tailscale repository file failed validation; replacing..."
+  else
+    echo "Configuring Tailscale official Fedora repository..."
+  fi
+
+  install_tailscale_repo "${repo_file}"
 }
 
 stage_install() {
@@ -165,9 +253,7 @@ stage_authenticate() {
   hostname=$(resolve_bootstrap_hostname)
 
   local backend_state=""
-  if tailscale status --json >/dev/null 2>&1; then
-    backend_state=$(tailscale status --json 2>/dev/null | sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
-  fi
+  backend_state=$(tailscale_backend_state || true)
 
   if [[ "${backend_state}" == "Running" ]]; then
     echo "Tailscale already connected; enabling SSH without reauthentication..."
@@ -188,17 +274,15 @@ stage_verify() {
   fi
 
   local backend_state=""
-  backend_state=$(tailscale status --json 2>/dev/null | sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+  backend_state=$(tailscale_backend_state || true)
   if [[ "${backend_state}" != "Running" ]]; then
     echo "Verification failed: Tailscale is not connected." >&2
     exit 1
   fi
 
-  if ! tailscale debug prefs 2>/dev/null | grep -q 'RunSSH": true'; then
-    if ! tailscale status 2>/dev/null | grep -qi 'ssh'; then
-      echo "Verification failed: Tailscale SSH is not enabled." >&2
-      exit 1
-    fi
+  if ! tailscale_ssh_enabled; then
+    echo "Verification failed: Tailscale SSH is not enabled." >&2
+    exit 1
   fi
 
   local ts_ip=""
@@ -208,8 +292,8 @@ stage_verify() {
     exit 1
   fi
 
-  local hostname
-  hostname=$(tailscale status --json 2>/dev/null | sed -n 's/.*"HostName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+  local hostname=""
+  hostname=$(tailscale_hostname || true)
   if [[ -z "${hostname}" ]]; then
     hostname=$(resolve_bootstrap_hostname)
   fi
@@ -223,9 +307,13 @@ Next: tell the operator "done"
 EOF
 }
 
-stage_preflight
-stage_repository
-stage_install
-stage_service
-stage_authenticate
-stage_verify
+main() {
+  stage_preflight
+  stage_repository
+  stage_install
+  stage_service
+  stage_authenticate
+  stage_verify
+}
+
+main "$@"
