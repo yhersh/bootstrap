@@ -235,7 +235,9 @@ tailscale_up_and_wait() {
   # and printing on return hid the URL until the timeout (seen on a Lume VM).
   # A backgrounded sudo cannot answer a password prompt, so stream only when
   # sudo can run non-interactively; otherwise run in the foreground with a note.
-  if ! sudo -n true 2>/dev/null; then
+  # Probe with the real command: a sudoers rule can exempt `true` yet still
+  # require a password for tailscale (Devin review on #6).
+  if ! sudo -n tailscale --version >/dev/null 2>&1; then
     echo "sudo needs a password for every command on this host; the login URL appears when 'tailscale up' returns."
     up_output=$(sudo tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" 2>&1) || true
     if [[ -n "${up_output}" ]]; then

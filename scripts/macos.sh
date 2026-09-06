@@ -332,7 +332,9 @@ tailscale_up_and_wait() {
   # /dev/null). The preflight `sudo -v` normally leaves a cached timestamp;
   # when this Mac disables caching (timestamp_timeout=0), fall back to the
   # foreground form and say why the URL will only show when `up` returns.
-  if ! sudo -n true 2>/dev/null; then
+  # Probe with the real command: a sudoers rule can exempt `true` yet still
+  # require a password for tailscale (Devin review on #6).
+  if ! sudo -n tailscale --version >/dev/null 2>&1; then
     echo "sudo needs a password for every command on this Mac; the login URL appears when 'tailscale up' returns."
     up_output=$(sudo tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" 2>&1) || true
     if [[ -n "${up_output}" ]]; then
