@@ -34,6 +34,14 @@ teardown() {
   rm -rf "${BATS_MOCK_STATE_DIR:-}" "${FAKE_BREW_PREFIX:-}"
 }
 
+# Same as run_bootstrap but WITHOUT the fake brew prefix on PATH: models a
+# non-login shell where brew exists on disk but is not on PATH.
+run_bootstrap_no_brew_path() {
+  BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}" \
+    PATH="${PROJECT_ROOT}/test/helpers/bin:/usr/bin:/bin" \
+    run bash "${PROJECT_ROOT}/scripts/macos.sh"
+}
+
 run_bootstrap() {
   run env BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}" \
     PATH="${FAKE_BREW_PREFIX}/bin:${PROJECT_ROOT}/test/helpers/bin:/usr/bin:/bin" \
@@ -66,6 +74,28 @@ run_bootstrap() {
   run_bootstrap
   [ "$status" -eq 0 ]
   [[ "$output" == *"Homebrew already installed"* ]]
+}
+
+@test "brew present at prefix but not on PATH is reused, installer not run" {
+  setup_fake_macos
+  install_mock_brew
+  run_bootstrap_no_brew_path
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Homebrew already installed at"* ]]
+  [[ "$output" != *"Installing Homebrew..."* ]]
+}
+
+@test "Tailscale login URL is printed before tailscale up returns" {
+  setup_fake_macos
+  install_mock_brew
+  export TAILSCALE_UP_DELAY=2
+  run_bootstrap
+  [ "$status" -eq 0 ]
+  local url_at success_at
+  url_at=$(printf '%s\n' "$output" | grep -n 'To authenticate, visit:' | head -n1 | cut -d: -f1)
+  success_at=$(printf '%s\n' "$output" | grep -n '^Success\.' | head -n1 | cut -d: -f1)
+  [ -n "$url_at" ] && [ -n "$success_at" ] && [ "$url_at" -lt "$success_at" ]
+  [[ "$output" == *"https://login.tailscale.com/a/mock"* ]]
 }
 
 @test "Homebrew is installed when missing" {

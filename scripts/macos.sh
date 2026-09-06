@@ -309,10 +309,34 @@ tailscale_up_and_wait() {
 
   echo "Starting Tailscale authentication (browser approval required)..."
   echo "Hostname: ${hostname}"
-  up_output=$(sudo tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" 2>&1) || true
+  # `tailscale up` blocks until the browser approval lands. Stream its output
+  # to a file and surface the login URL the moment it appears; capturing the
+  # command's output and printing it on return hid the URL until the timeout
+  # (seen on a Lume VM run).
+  local up_log="${TMPDIR_BOOTSTRAP}/tailscale-up.log"
+  : >"${up_log}"
+  # shellcheck disable=SC2024  # the log must be user-owned (it lives in the private temp dir), not root's
+  sudo tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" >"${up_log}" 2>&1 &
+  local up_pid=$!
+  while kill -0 "${up_pid}" 2>/dev/null; do
+    if [[ -z "${auth_url}" ]]; then
+      auth_url=$(grep -Eo 'https://login\.tailscale\.com/[^[:space:]]+' "${up_log}" | head -n1 || true)
+      if [[ -n "${auth_url}" ]]; then
+        echo ""
+        echo "To authenticate, visit:"
+        echo "  ${auth_url}"
+        echo ""
+      fi
+    fi
+    sleep 1
+  done
+  wait "${up_pid}" || true
+  up_output=$(cat "${up_log}")
   if [[ -n "${up_output}" ]]; then
     echo "${up_output}"
-    auth_url=$(printf '%s\n' "${up_output}" | grep -Eo 'https://[^[:space:]]+' | head -n1 || true)
+    if [[ -z "${auth_url}" ]]; then
+      auth_url=$(printf '%s\n' "${up_output}" | grep -Eo 'https://[^[:space:]]+' | head -n1 || true)
+    fi
   fi
 
   if wait_for_tailscale_running; then
@@ -402,9 +426,12 @@ EOF
 stage_homebrew() {
   STAGE="homebrew"
 
+  # Put the Homebrew prefix on PATH BEFORE probing: a non-login shell (ssh
+  # command, curl | bash from a fresh Terminal) does not have it, and probing
+  # PATH alone re-ran the installer on every rerun (seen on a Lume VM run).
+  ensure_brew_path
   if command -v brew >/dev/null 2>&1; then
-    echo "Homebrew already installed."
-    ensure_brew_path
+    echo "Homebrew already installed at ${BREW_PREFIX}."
     return
   fi
 
