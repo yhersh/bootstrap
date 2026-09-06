@@ -97,11 +97,16 @@ resolve_bootstrap_hostname() {
       tr -d '-' || true
   )
 
-  if [[ -z "${platform_uuid}" ]]; then
-    platform_uuid="00000000"
+  # Never expose raw platform-UUID bytes in a tailnet name: derive a stable,
+  # non-reversible suffix from it instead (same 8-char shape as before).
+  local suffix
+  if [[ -n "${platform_uuid}" ]]; then
+    suffix=$(printf '%s' "${platform_uuid}" | sha256_file - | cut -c1-8)
+  else
+    suffix="00000000"
   fi
 
-  echo "mac-${platform_uuid:0:8}"
+  echo "mac-${suffix}"
 }
 
 parse_tailscale_status_json() {

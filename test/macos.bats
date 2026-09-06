@@ -115,14 +115,15 @@ run_bootstrap() {
   [[ "$output" == *"Invalid BOOTSTRAP_HOSTNAME"* ]]
 }
 
-@test "generic hostname is replaced with platform UUID suffix" {
+@test "generic hostname gets a hashed (non-reversible) platform suffix" {
   setup_fake_macos
   install_mock_brew
   export MOCK_LOCAL_HOSTNAME=localhost
-  export TAILSCALE_HOSTNAME=mac-abcdef12
+  export TAILSCALE_HOSTNAME=mac-eabf6fd8
   run_bootstrap
   [ "$status" -eq 0 ]
-  [[ "$output" == *"mac-abcdef12"* ]]
+  [[ "$output" == *"mac-eabf6fd8"* ]]
+  [[ "$output" != *"abcdef12"* ]]
 }
 
 @test "installer sha256 mismatch aborts before running installer" {
