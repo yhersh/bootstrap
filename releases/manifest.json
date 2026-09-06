@@ -12,7 +12,7 @@
     },
     "macos": {
       "path": "scripts/macos.sh",
-      "sha256": "fd254faaf97d20d3e2ae8363f4f9986b3d24ddf8119664cd7d68eb33fe7f087c"
+      "sha256": "a1e608d7e8ac8da210ab30061f9a5c4e8570363c9d8856373ffd59d4cac70156"
     }
   }
 }
