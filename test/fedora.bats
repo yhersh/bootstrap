@@ -104,6 +104,26 @@ EOF
   [ ! -f "${BATS_MOCK_STATE_DIR}/tailscale-repo" ]
 }
 
+@test "Tailscale login URL is printed before tailscale up returns" {
+  setup_fake_fedora
+  export TAILSCALE_UP_DELAY=2
+  run_bootstrap
+  [ "$status" -eq 0 ]
+  local url_at success_at
+  url_at=$(printf '%s\n' "$output" | grep -n 'To authenticate, visit:' | head -n1 | cut -d: -f1)
+  success_at=$(printf '%s\n' "$output" | grep -n '^Success\.' | head -n1 | cut -d: -f1)
+  [ -n "$url_at" ] && [ -n "$success_at" ] && [ "$url_at" -lt "$success_at" ]
+}
+
+@test "sudo without timestamp caching falls back to foreground tailscale up" {
+  setup_fake_fedora
+  export SUDO_MOCK_NONINTERACTIVE_FAIL=1
+  run_bootstrap
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sudo needs a password for every command"* ]]
+  [[ "$output" == *"Remote access ready"* ]]
+}
+
 @test "running as root is rejected" {
   setup_fake_fedora
   run env BOOTSTRAP_TEST_HOME="${PROJECT_ROOT}" BOOTSTRAP_TEST_EUID=0 bash "${PROJECT_ROOT}/scripts/fedora.sh"

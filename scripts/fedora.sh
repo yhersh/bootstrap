@@ -230,10 +230,48 @@ tailscale_up_and_wait() {
 
   echo "Starting Tailscale authentication (browser approval required)..."
   echo "Hostname: ${hostname}"
-  up_output=$(sudo tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" 2>&1) || true
+  # `tailscale up` blocks until the browser approval lands. Stream its output
+  # to a private log and surface the login URL the moment it appears; capturing
+  # and printing on return hid the URL until the timeout (seen on a Lume VM).
+  # A backgrounded sudo cannot answer a password prompt, so stream only when
+  # sudo can run non-interactively; otherwise run in the foreground with a note.
+  if ! sudo -n true 2>/dev/null; then
+    echo "sudo needs a password for every command on this host; the login URL appears when 'tailscale up' returns."
+    up_output=$(sudo tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" 2>&1) || true
+    if [[ -n "${up_output}" ]]; then
+      echo "${up_output}"
+      auth_url=$(printf '%s\n' "${up_output}" | grep -Eo 'https://[^[:space:]]+' | head -n1 || true)
+    fi
+    if wait_for_tailscale_running; then
+      return 0
+    fi
+    print_tailscale_auth_timeout "${auth_url}"
+  fi
+
+  local up_log="${TMPDIR_BOOTSTRAP}/tailscale-up.log"
+  : >"${up_log}"
+  # shellcheck disable=SC2024  # the log must be user-owned (it lives in the private temp dir), not root's
+  sudo -n tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" >"${up_log}" 2>&1 &
+  local up_pid=$!
+  while kill -0 "${up_pid}" 2>/dev/null; do
+    if [[ -z "${auth_url}" ]]; then
+      auth_url=$(grep -Eo 'https://login\.tailscale\.com/[^[:space:]]+' "${up_log}" | head -n1 || true)
+      if [[ -n "${auth_url}" ]]; then
+        echo ""
+        echo "To authenticate, visit:"
+        echo "  ${auth_url}"
+        echo ""
+      fi
+    fi
+    sleep 1
+  done
+  wait "${up_pid}" || true
+  up_output=$(cat "${up_log}")
   if [[ -n "${up_output}" ]]; then
     echo "${up_output}"
-    auth_url=$(printf '%s\n' "${up_output}" | grep -Eo 'https://[^[:space:]]+' | head -n1 || true)
+    if [[ -z "${auth_url}" ]]; then
+      auth_url=$(printf '%s\n' "${up_output}" | grep -Eo 'https://[^[:space:]]+' | head -n1 || true)
+    fi
   fi
 
   if wait_for_tailscale_running; then
@@ -345,9 +383,14 @@ stage_preflight() {
     exit 1
   fi
 
-  if ! sudo -v; then
-    echo "sudo authorization required." >&2
-    exit 1
+  # A NOPASSWD user who is also in wheel/admin still gets prompted by `sudo -v`
+  # (the group rule matches too). Try the non-interactive form first; only
+  # prompt when it is genuinely needed. Seen on both Lume VM runs.
+  if ! sudo -n true 2>/dev/null; then
+    if ! sudo -v; then
+      echo "sudo authorization required." >&2
+      exit 1
+    fi
   fi
 
   TMPDIR_BOOTSTRAP=$(mktemp -d)
