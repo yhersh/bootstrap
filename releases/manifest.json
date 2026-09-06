@@ -9,6 +9,10 @@
     "windows": {
       "path": "scripts/windows.ps1",
       "sha256": "3d7bad37378cb638ad246e7e465f512c9b9a76f318b3d7d62790f7358ef078f2"
+    },
+    "macos": {
+      "path": "scripts/macos.sh",
+      "sha256": "fd254faaf97d20d3e2ae8363f4f9986b3d24ddf8119664cd7d68eb33fe7f087c"
     }
   }
 }

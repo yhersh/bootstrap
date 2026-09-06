@@ -2,6 +2,7 @@ import { SELF } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import { BOOTSTRAP_VERSION } from "../src/worker";
 import fedoraScript from "../scripts/fedora.sh";
+import macosScript from "../scripts/macos.sh";
 import windowsScript from "../scripts/windows.ps1";
 import releaseManifest from "../releases/manifest.json";
 
@@ -20,6 +21,7 @@ async function sha256Hex(input: string): Promise<string> {
 describe("bootstrap worker routes", () => {
   it("manifest sha256 values match bundled script bytes", async () => {
     expect(releaseManifest.scripts.fedora.sha256).toBe(await sha256Hex(fedoraScript));
+    expect(releaseManifest.scripts.macos.sha256).toBe(await sha256Hex(macosScript));
     expect(releaseManifest.scripts.windows.sha256).toBe(await sha256Hex(windowsScript));
   });
 
@@ -47,6 +49,15 @@ describe("bootstrap worker routes", () => {
     expect(await response.text()).toBe(windowsScript);
   });
 
+  it("serves macos script bytes on /macos", async () => {
+    const response = await fetchWorker("/macos");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(macosScript);
+    expect(response.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(response.headers.get("Content-Security-Policy")).toBe("default-src 'none'");
+  });
+
   it("serves immutable exact version and checksum", async () => {
     const exact = await fetchWorker(`/fedora/v${BOOTSTRAP_VERSION}`);
     expect(exact.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
@@ -66,6 +77,31 @@ describe("bootstrap worker routes", () => {
     expect(digest).toBe(expected);
   });
 
+  it("serves macos immutable exact version and checksum", async () => {
+    const exact = await fetchWorker(`/macos/v${BOOTSTRAP_VERSION}`);
+    expect(exact.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(await exact.text()).toBe(macosScript);
+
+    const checksum = await fetchWorker(`/macos/v${BOOTSTRAP_VERSION}.sha256`);
+    expect(checksum.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    const checksumText = await checksum.text();
+    expect(checksumText).toMatch(/^[a-f0-9]{64}\s+macos\.sh\n$/);
+
+    const digest = checksumText.split(/\s+/)[0];
+    const data = new TextEncoder().encode(macosScript);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    const expected = [...new Uint8Array(hashBuffer)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    expect(digest).toBe(expected);
+  });
+
+  it("serves /macos/v1 alias", async () => {
+    const response = await fetchWorker("/macos/v1");
+    expect(await response.text()).toBe(macosScript);
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=300");
+  });
+
   it("serves /fedora/v1 alias", async () => {
     const response = await fetchWorker("/fedora/v1");
     expect(await response.text()).toBe(fedoraScript);
@@ -76,7 +112,7 @@ describe("bootstrap worker routes", () => {
     const manifest = await fetchWorker("/releases/manifest.json");
     expect(manifest.status).toBe(200);
     const manifestJson = (await manifest.json()) as {
-      scripts: { fedora: { sha256: string }; windows: { sha256: string } };
+      scripts: { fedora: { sha256: string }; macos: { sha256: string }; windows: { sha256: string } };
     };
     expect(manifestJson).toEqual(releaseManifest);
     expect(manifestJson.scripts.fedora.sha256).toMatch(/^[a-f0-9]{64}$/);
