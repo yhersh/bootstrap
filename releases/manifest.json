@@ -4,15 +4,15 @@
   "scripts": {
     "fedora": {
       "path": "scripts/fedora.sh",
-      "sha256": "52ec705b18761fa6d6d1229b91195ac361556781068997fb583a786d5af75f87"
+      "sha256": "39c669f3777ece0a4733e3d0607cc60fd94e8c07a743f3b4769e54f672fe22b5"
     },
     "windows": {
       "path": "scripts/windows.ps1",
-      "sha256": "0a1f9967cdd38ce85b11db6c3fbbdd57822f9b793bb2b2726f41bcf404c333e2"
+      "sha256": "0bd1839162ccf08ed45d8668396c6a4283df28a4d8e36d9d7116fb9ee2fa77f7"
     },
     "macos": {
       "path": "scripts/macos.sh",
-      "sha256": "b44e0eaf8eb12ecffe335ebcdae7277f4ca782d4c9a4796eda12b4b1b813b725"
+      "sha256": "aa80ebc027c658a017e95b8c1358f851d8a405a1bf0fa398b08c1d0e6d073595"
     }
   }
 }

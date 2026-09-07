@@ -440,16 +440,26 @@ function Ensure-Tailscale {
         return
     }
 
-    # --reset clears any stale non-default preferences from a prior config
-    # (e.g. --unattended left by an earlier bring-up); without it `tailscale up`
-    # aborts with "must mention all non-default flags" on a reused machine and
-    # takes the whole bootstrap down before OpenSSH is set up. --unattended is
-    # what a headless server wants anyway (stays connected with no user logged
-    # in). Tailscale SSH is unsupported on Windows, so no --ssh here — OpenSSH
-    # provides SSH over the tailnet.
-    Invoke-NativeCommand -ScriptBlock {
-        tailscale up --reset --unattended
-    } -Description 'tailscale up --reset --unattended'
+    # `tailscale up` on a fresh node authenticates and connects. On a REUSED
+    # node that carries any stale non-default preference (e.g. it was brought
+    # up unattended before), `up` aborts with "must mention all non-default
+    # flags" and, on Windows, that throw took the whole bootstrap down before
+    # OpenSSH was set up. Fall back to `tailscale login`, which authenticates a
+    # logged-out node WITHOUT touching its stored preferences (so advertised
+    # routes / exit-node settings survive) and without that guardrail. Tailscale
+    # runs its own SSH server only on Linux and open-source macOS, never here;
+    # OpenSSH provides remote access over the tailnet.
+    $connected = $false
+    try {
+        Invoke-NativeCommand -ScriptBlock { tailscale up } -Description 'tailscale up'
+        $connected = $true
+    }
+    catch {
+        Write-StageMessage 'tailscale up could not change the existing configuration; authenticating without resetting preferences...'
+    }
+    if (-not $connected) {
+        Invoke-NativeCommand -ScriptBlock { tailscale login } -Description 'tailscale login'
+    }
 }
 
 function Resolve-OptionalComponent {
