@@ -440,9 +440,16 @@ function Ensure-Tailscale {
         return
     }
 
+    # --reset clears any stale non-default preferences from a prior config
+    # (e.g. --unattended left by an earlier bring-up); without it `tailscale up`
+    # aborts with "must mention all non-default flags" on a reused machine and
+    # takes the whole bootstrap down before OpenSSH is set up. --unattended is
+    # what a headless server wants anyway (stays connected with no user logged
+    # in). Tailscale SSH is unsupported on Windows, so no --ssh here — OpenSSH
+    # provides SSH over the tailnet.
     Invoke-NativeCommand -ScriptBlock {
-        tailscale up
-    } -Description 'tailscale up'
+        tailscale up --reset --unattended
+    } -Description 'tailscale up --reset --unattended'
 }
 
 function Resolve-OptionalComponent {
