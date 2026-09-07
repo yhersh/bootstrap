@@ -239,7 +239,7 @@ tailscale_up_and_wait() {
   # require a password for tailscale (Devin review on #6).
   if ! sudo -n tailscale --version >/dev/null 2>&1; then
     echo "sudo needs a password for every command on this host; the login URL appears when 'tailscale up' returns."
-    up_output=$(sudo tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" 2>&1) || true
+    up_output=$(sudo tailscale up --ssh --reset --hostname="${hostname}" --timeout="${wait_seconds}s" 2>&1) || true
     if [[ -n "${up_output}" ]]; then
       echo "${up_output}"
       auth_url=$(printf '%s\n' "${up_output}" | grep -Eo 'https://[^[:space:]]+' | head -n1 || true)
@@ -253,7 +253,7 @@ tailscale_up_and_wait() {
   local up_log="${TMPDIR_BOOTSTRAP}/tailscale-up.log"
   : >"${up_log}"
   # shellcheck disable=SC2024  # the log must be user-owned (it lives in the private temp dir), not root's
-  sudo -n tailscale up --ssh --hostname="${hostname}" --timeout="${wait_seconds}s" >"${up_log}" 2>&1 &
+  sudo -n tailscale up --ssh --reset --hostname="${hostname}" --timeout="${wait_seconds}s" >"${up_log}" 2>&1 &
   local up_pid=$!
   while kill -0 "${up_pid}" 2>/dev/null; do
     if [[ -z "${auth_url}" ]]; then
