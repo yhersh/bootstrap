@@ -15,6 +15,10 @@ $PSNativeCommandUseErrorActionPreference = $true
 $ErrorActionPreference = 'Stop'
 
 $TailscaleRemoteCidr = '100.64.0.0/10'
+# Windows stores an inbound RemoteAddress CIDR but reads it back from
+# Get-NetFirewallAddressFilter as the expanded range, so the acceptance
+# check must recognise both spellings of the same Tailscale scope.
+$TailscaleRemoteRange = '100.64.0.0-100.127.255.255'
 $TailscaleSshRuleName = 'OpenSSH-Server-In-TCP-Tailscale'
 
 function Test-IsElevated {
@@ -131,7 +135,11 @@ function Test-IsAcceptableSshFirewallRule {
         [Parameter(Mandatory = $true)] $RuleInfo
     )
 
-    if ($RuleInfo.RemoteAddress -ne $TailscaleRemoteCidr) {
+    # RemoteAddress may come back as an array, and Windows normalises a CIDR to
+    # its expanded range on read-back; accept either canonical spelling.
+    $acceptableRemotes = @($TailscaleRemoteCidr, $TailscaleRemoteRange)
+    $remoteValues = @($RuleInfo.RemoteAddress) | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' }
+    if ($remoteValues.Count -ne 1 -or $remoteValues[0] -notin $acceptableRemotes) {
         return $false
     }
 

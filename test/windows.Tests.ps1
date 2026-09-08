@@ -39,6 +39,7 @@ Describe 'windows.ps1 static guarantees' {
         $script:ScriptContent | Should -Match 'Assert-SshFirewallPolicy'
         $script:ScriptContent | Should -Match 'Disable-NonManagedSshFirewallRules'
         $script:ScriptContent | Should -Match 'Assert-ManagedSshFirewallRuleReady'
+        $script:ScriptContent | Should -Match '100\.64\.0\.0-100\.127\.255\.255'
     }
 
     It 'resolves PowerShell from fixed system paths' {
