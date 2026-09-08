@@ -284,7 +284,10 @@ function Assert-SshFirewallPolicy {
         return
     }
 
-    $allowRules = Get-SshInboundAllowRules
+    # Force an array: a single matching rule would unwrap to a scalar, making
+    # $allowRules.Count null (rendered "found .") and throwing even though
+    # exactly one correct rule is present.
+    $allowRules = @(Get-SshInboundAllowRules)
 
     if ($allowRules.Count -ne 1) {
         throw "Expected exactly one enabled SSH allow rule; found $($allowRules.Count)."
