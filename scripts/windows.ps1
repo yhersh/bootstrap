@@ -19,6 +19,9 @@ $TailscaleRemoteCidr = '100.64.0.0/10'
 # Get-NetFirewallAddressFilter as the expanded range, so the acceptance
 # check must recognise both spellings of the same Tailscale scope.
 $TailscaleRemoteRange = '100.64.0.0-100.127.255.255'
+# And Windows Server/11 actually reads it back in network/netmask form,
+# confirmed live on a real host: 100.64.0.0/255.192.0.0 (/10 == 255.192.0.0).
+$TailscaleRemoteNetmask = '100.64.0.0/255.192.0.0'
 $TailscaleSshRuleName = 'OpenSSH-Server-In-TCP-Tailscale'
 
 function Test-IsElevated {
@@ -137,7 +140,7 @@ function Test-IsAcceptableSshFirewallRule {
 
     # RemoteAddress may come back as an array, and Windows normalises a CIDR to
     # its expanded range on read-back; accept either canonical spelling.
-    $acceptableRemotes = @($TailscaleRemoteCidr, $TailscaleRemoteRange)
+    $acceptableRemotes = @($TailscaleRemoteCidr, $TailscaleRemoteRange, $TailscaleRemoteNetmask)
     # Wrap the whole pipeline in @() — a single result would otherwise unwrap to
     # a scalar string, making $remoteValues[0] the first CHARACTER, not the address.
     $remoteValues = @(@($RuleInfo.RemoteAddress) | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' })
