@@ -138,7 +138,9 @@ function Test-IsAcceptableSshFirewallRule {
     # RemoteAddress may come back as an array, and Windows normalises a CIDR to
     # its expanded range on read-back; accept either canonical spelling.
     $acceptableRemotes = @($TailscaleRemoteCidr, $TailscaleRemoteRange)
-    $remoteValues = @($RuleInfo.RemoteAddress) | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' }
+    # Wrap the whole pipeline in @() — a single result would otherwise unwrap to
+    # a scalar string, making $remoteValues[0] the first CHARACTER, not the address.
+    $remoteValues = @(@($RuleInfo.RemoteAddress) | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' })
     if ($remoteValues.Count -ne 1 -or $remoteValues[0] -notin $acceptableRemotes) {
         return $false
     }

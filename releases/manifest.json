@@ -8,7 +8,7 @@
     },
     "windows": {
       "path": "scripts/windows.ps1",
-      "sha256": "b294d53276fa6c48ce3b493b44876bc169b75baf36fe25108e3f4144d6a2425f"
+      "sha256": "143a653a4158315ae4907175b7b7fe09f965cce1600a30ee54c84cab07755ed6"
     },
     "macos": {
       "path": "scripts/macos.sh",
